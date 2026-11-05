@@ -30,7 +30,7 @@ Install from CurseForge, or copy the `RXPBlizzStyle` folder into `World of Warcr
 
 ## Reporting problems
 
-- The display or the options are wrong: open an [issue here](https://github.com/HexToolFactory/RXPBlizzStyle/issues).
+- The display or the options are wrong: click the "?" on the header bar (or type `/rxpstyle report`), copy the text and paste it into an [issue here](https://github.com/HexToolFactory/RXPBlizzStyle/issues).
 - A guide step itself is wrong: right-click that step and choose "Give Feedback for step", or right-click the header bar and choose "Open Feedback Form". Both open the form of RestedXP.
 
 ## License
