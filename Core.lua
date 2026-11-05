@@ -113,6 +113,7 @@ driver:SetScript("OnEvent", function(self, event, name)
     self:UnregisterEvent(event)
 
     RXPBlizzStyleDB = RXPBlizzStyleDB or {}
+    RXPBlizzStyleDB.collapseTainted = nil   -- left by a version that was never released
     for key, value in pairs(ns.defaults) do
         if RXPBlizzStyleDB[key] == nil then RXPBlizzStyleDB[key] = value end
     end
