@@ -3,6 +3,7 @@
 ## Notes: Shows RestedXP guide steps in the style of the quest tracker and on the waypoint arrow.
 ## Author: HexToolFactory
 ## Version: @project-version@
+## X-Curse-Project-ID: 1784720
 ## Category: Quests
 ## Dependencies: RXPGuides
 ## OptionalDeps: TomTom
