@@ -33,6 +33,9 @@ end
 
 local root, activeHeader, upcomingHeader, wheelArea, grip
 local gripDragging = false
+-- Blizzard's quest tracker while the guide stands in for it (see "The guide in place of the quest tracker").
+local trackerHidden, trackerAway, trackerShownByUser
+local trackerOrigin      -- where the tracker and its header bar are at full size, measured while shown
 local drawFloor   -- how far down rows may reach (a negative offset from the top), nil = no limit
 local rows = {}
 local dashWidth
@@ -391,28 +394,168 @@ local function CreateHeader(collapseKey)
     return header
 end
 
+-- Where the auction house button of a guide line puts an item. A target counts while its addon is loaded:
+-- available() says so, has(id) whether the item is on its list already, add(id, qty) puts it there.
+
+local function ItemName(itemID)
+    return C_Item and C_Item.GetItemNameByID and C_Item.GetItemNameByID(itemID)
+end
+
+-- Forever Auction: its shopping list "Guide".
+local foreverAuction = {
+    available = function() return ForeverAuction_AddToShopping ~= nil end,
+    has = function(itemID)
+        return not ForeverAuction_ShoppingQty or (ForeverAuction_ShoppingQty(itemID) or 0) > 0
+    end,
+    add = function(itemID, qty) ForeverAuction_AddToShopping(itemID, qty, "Guide") end,
+    hint = function() return "Forever Auction shows it at the auction house." end,
+}
+
+-- Auctionator: a shopping list of its own, "RestedXP Guide", with an exact search per item and the quantity still
+-- needed. Its API only replaces whole lists, so the list is read, changed and written back.
+local AUCTIONATOR_LIST, AUCTIONATOR_CALLER = "RestedXP Guide", "RXPBlizzStyle"
+
+local function AuctionatorAPI()
+    local api = type(Auctionator) == "table" and type(Auctionator.API) == "table" and Auctionator.API.v1
+    if type(api) ~= "table" then return end
+    for _, name in ipairs({"CreateShoppingList", "GetShoppingListItems", "ConvertToSearchString", "ConvertFromSearchString"}) do
+        if type(api[name]) ~= "function" then return end
+    end
+    return api
+end
+
+local function AuctionatorItems(api)      -- a copy of the list's search strings; empty while the list does not exist
+    local ok, items = pcall(api.GetShoppingListItems, AUCTIONATOR_CALLER, AUCTIONATOR_LIST)
+    local copy = {}
+    for i, search in ipairs(ok and type(items) == "table" and items or {}) do copy[i] = search end
+    return copy
+end
+
+local function AuctionatorIndex(api, items, name)
+    name = name:lower()
+    for i, search in ipairs(items) do
+        local ok, term = pcall(api.ConvertFromSearchString, AUCTIONATOR_CALLER, search)
+        if ok and type(term) == "table" and type(term.searchString) == "string" and term.searchString:lower() == name then
+            return i
+        end
+    end
+end
+
+local auctionator = {
+    available = function() return AuctionatorAPI() ~= nil end,
+    has = function(itemID)
+        local api, name = AuctionatorAPI(), ItemName(itemID)
+        return api and name and AuctionatorIndex(api, AuctionatorItems(api), name) ~= nil or false
+    end,
+    add = function(itemID, qty)
+        local api, name = AuctionatorAPI(), ItemName(itemID)
+        if not (api and name) then return end   -- name not in the item cache yet; the tooltip asks for it
+        local ok, search = pcall(api.ConvertToSearchString, AUCTIONATOR_CALLER,
+            {searchString = name, isExact = true, quantity = qty})
+        if not ok or type(search) ~= "string" then return end
+        local items = AuctionatorItems(api)
+        local index = AuctionatorIndex(api, items, name)
+        items[index or #items + 1] = search     -- an item already there gets the current quantity
+        pcall(api.CreateShoppingList, AUCTIONATOR_CALLER, AUCTIONATOR_LIST, items)
+    end,
+    hint = function(itemID, has)
+        return has and ('On the Auctionator shopping list "' .. AUCTIONATOR_LIST .. '". A click updates the quantity.')
+            or ('Auctionator: shopping list "' .. AUCTIONATOR_LIST .. '".')
+    end,
+}
+
+-- Auctioneer has no shopping list. Its Search UI keeps a snatch list instead: items a search offers to buy when an
+-- auction is at or below a price. A guide item goes on it at 100% of Auctioneer's market price; an entry that is
+-- already there keeps the price its owner set.
+local SNATCH_PERCENT = 100
+
+-- The snatch searcher and its list, once Search UI has loaded its settings. Before that the list is a stand-in, and
+-- adding to it would overwrite the saved one.
+local function SnatchList()
+    local searchUI = AucSearchUI
+    local snatch = type(searchUI) == "table" and type(searchUI.Searchers) == "table" and searchUI.Searchers.Snatch
+    if type(snatch) ~= "table" or type(snatch.AddSnatch) ~= "function" or type(snatch.Private) ~= "table" then return end
+    local list = snatch.Private.snatchList
+    if type(list) ~= "table" or type(searchUI.GetSearchLocals) ~= "function" then return end
+    local ok, get = pcall(searchUI.GetSearchLocals)
+    if not ok or type(get) ~= "function" then return end
+    local okSaved, saved = pcall(get, "snatch.itemsList")
+    if okSaved and saved == list then return snatch, list end
+end
+
+local function OnSnatchList(itemID)
+    local _, list = SnatchList()
+    for _, entry in pairs(list or {}) do
+        local link = type(entry) == "table" and entry.link
+        if type(link) == "string" and tonumber(link:match("item:(%d+)")) == itemID then return true end
+    end
+    return false
+end
+
+local auctioneer = {
+    snatch = true,
+    available = function() return SnatchList() ~= nil end,
+    has = OnSnatchList,
+    add = function(itemID, qty)
+        local snatch = SnatchList()
+        if not snatch or OnSnatchList(itemID) then return end
+        local getInfo = C_Item and C_Item.GetItemInfo or GetItemInfo
+        local link = getInfo and select(2, getInfo(itemID))
+        if not link then return end
+        -- AddSnatch saves the entry first and then resets its own window, which fails while that window was never opened.
+        pcall(snatch.AddSnatch, link, nil, SNATCH_PERCENT, qty)
+    end,
+    hint = function(itemID, has)
+        return has and "Already on Auctioneer's snatch list."
+            or "Auctioneer's Snatch search offers it at up to its market price."
+    end,
+}
+
+local SHOP_TARGETS = {foreverAuction, auctionator, auctioneer}
+
+local function AnyShopTarget()
+    for _, target in ipairs(SHOP_TARGETS) do
+        if target.available() then return true end
+    end
+    return false
+end
+
+-- Dimmed once the item is on every list there is.
 local function Shop_Update(button)
-    local onList = ForeverAuction_ShoppingQty and button.item and ForeverAuction_ShoppingQty(button.item.id) or 0
-    button:SetAlpha(onList > 0 and 0.45 or 1)
+    local item = button.item
+    if not item then return end
+    local done = true
+    for _, target in ipairs(SHOP_TARGETS) do
+        if done and target.available() then done = target.has(item.id) end
+    end
+    button:SetAlpha(done and 0.45 or 1)
 end
 
 local function Shop_OnEnter(button)
     Row_OnEnter(button:GetParent())
     local item = button.item
     if not item then return end
-    local name = C_Item and C_Item.GetItemNameByID and C_Item.GetItemNameByID(item.id)
+    local onlySnatch, hints = true, {}
+    for _, target in ipairs(SHOP_TARGETS) do
+        if target.available() then
+            onlySnatch = onlySnatch and target.snatch or false
+            hints[#hints + 1] = target.hint(item.id, target.has(item.id))
+        end
+    end
     GameTooltip:SetOwner(button, "ANCHOR_LEFT")
-    GameTooltip:AddLine("Add to the shopping list", 1, 1, 1)
-    GameTooltip:AddLine((name or "Item") .. " x" .. item.qty, 0.8, 0.8, 0.8)
-    GameTooltip:AddLine("Forever Auction shows it at the auction house.", 0.8, 0.8, 0.8, true)
+    GameTooltip:AddLine(onlySnatch and "Add to Auctioneer's snatch list" or "Add to the shopping list", 1, 1, 1)
+    GameTooltip:AddLine((ItemName(item.id) or "Item") .. " x" .. item.qty, 0.8, 0.8, 0.8)
+    for _, hint in ipairs(hints) do GameTooltip:AddLine(hint, 0.8, 0.8, 0.8, true) end
     GameTooltip:Show()
 end
 
 local function Shop_OnClick(button)
-    if button.item and ForeverAuction_AddToShopping then
-        ForeverAuction_AddToShopping(button.item.id, button.item.qty, "Guide")
-        Shop_Update(button)
+    local item = button.item
+    if not item then return end
+    for _, target in ipairs(SHOP_TARGETS) do
+        if target.available() then target.add(item.id, item.qty) end
     end
+    Shop_Update(button)
 end
 
 local function CreateRow()
@@ -610,11 +753,12 @@ local function MentionsAuctionHouse(step)
     return false
 end
 
--- What the Forever Auction button of a line would put on the shopping list: an item the step still wants, in a step
--- that names the auction house. Nothing without that addon, so nobody else ever sees the button.
+-- What the auction house button of a line would put on a shopping list: an item the step still wants, in a step that
+-- names the auction house. Nothing without Forever Auction, Auctionator or Auctioneer's Search UI, so nobody else sees
+-- the button.
 function ns.ShopItem(step, element)
-    if not ForeverAuction_AddToShopping then return end
     if element.tag ~= "collect" and element.tag ~= "buy" then return end
+    if not AnyShopTarget() then return end
     if type(element.id) ~= "number" or element.completed or element.skip then return end
     if not MentionsAuctionHouse(step) then return end
     local count = C_Item and C_Item.GetItemCount and C_Item.GetItemCount(element.id) or 0
@@ -841,26 +985,74 @@ end
 --------------------------------------------------------------------------------------------------
 -- Position: where the quest tracker's next section would start, or wherever it was dragged
 
+-- Positions of Blizzard's frames are only read once the game has worked them out (IsRectValid). Asking for a position
+-- that is still pending makes the game work it out on the spot, inside this addon's code: the tracker's OnSizeChanged
+-- then marks it dirty from here, its next update runs tainted, and the world map's quest pins inherit that (blocked
+-- SetPassThroughButtons in combat). Until the game has done its layout pass, the last position stays.
+local function Resolved(region)
+    return not region.IsRectValid or region:IsRectValid()
+end
+
+local attachedAt     -- {left, top} below the quest tracker, from the last resolved layout
+
+local function TrackerAnchor(tracker)
+    if not Resolved(tracker) or not tracker:GetLeft() then return end
+    local left, top = tracker:GetLeft(), tracker:GetTop()
+    if tracker:IsVisible() then
+        local bottom
+        local header = tracker.Header
+        if header and header:IsVisible() then
+            if not Resolved(header) then return end
+            bottom = header:GetBottom()
+            trackerOrigin = {
+                left = header:GetLeft(), top = header:GetTop(), bottom = bottom, width = header:GetWidth(),
+                scale = tracker:GetEffectiveScale() / UIParent:GetEffectiveScale(), uiScale = UIParent:GetEffectiveScale(),
+            }
+        end
+        for _, module in ipairs(tracker.modules or {}) do
+            if module:IsVisible() then
+                if not Resolved(module) then return end
+                local moduleBottom = module:GetBottom()
+                if moduleBottom and (not bottom or moduleBottom < bottom) then bottom = moduleBottom end
+            end
+        end
+        if bottom then top = bottom - MODULE_GAP end
+    end
+    return left, top
+end
+
 local function Place()
     local tracker = ObjectiveTrackerFrame
-    local scale = tracker and tracker:GetEffectiveScale() / UIParent:GetEffectiveScale() or 1
+    local replaced = trackerHidden and trackerOrigin   -- the origin is gone only until it can be measured again
+    local scale = root:GetScale()   -- a shrunk tracker without its measurement says nothing: keep the last one
+    if replaced then
+        scale = trackerOrigin.scale
+    elseif tracker and not trackerHidden then
+        scale = tracker:GetEffectiveScale() / UIParent:GetEffectiveScale()
+    elseif not tracker then
+        scale = 1
+    end
     if math.abs(root:GetScale() - scale) > 0.001 then
         root:SetScale(scale)
         root.placedAt = nil
     end
 
     local left, top
-    if ns.db.attach and tracker and tracker:GetLeft() then
-        left, top = tracker:GetLeft(), tracker:GetTop()
-        if tracker:IsVisible() then
-            local bottom = tracker.Header and tracker.Header:IsVisible() and tracker.Header:GetBottom()
-            for _, module in ipairs(tracker.modules or {}) do
-                local moduleBottom = module:IsVisible() and module:GetBottom()
-                if moduleBottom and (not bottom or moduleBottom < bottom) then bottom = moduleBottom end
-            end
-            if bottom then top = bottom - MODULE_GAP end
+    if ns.db.attach and tracker and replaced then
+        left, top = trackerOrigin.left, trackerOrigin.bottom - MODULE_GAP
+    elseif ns.db.attach and tracker and trackerHidden then
+        if attachedAt then left, top = attachedAt[1], attachedAt[2] end
+    elseif ns.db.attach and tracker then
+        left, top = TrackerAnchor(tracker)
+        if left then
+            attachedAt = {left, top}
+        elseif attachedAt then
+            left, top = attachedAt[1], attachedAt[2]
+        else
+            return              -- right after loading, before the game's first layout pass: try again next update
         end
-    else
+    end
+    if not left then
         if not ns.db.position then
             -- Detached for the first time: stay where it is.
             ns.db.position = {
@@ -892,30 +1084,170 @@ local function PlaceGrip(left, top)
 end
 
 --------------------------------------------------------------------------------------------------
--- Blizzard's quest tracker is of little use next to a guide: collapse it to its header bar while a
--- guide is shown. Done once per change so that expanding it by hand sticks, and never in combat.
+-- The guide in place of the quest tracker. While a guide is shown, Blizzard's tracker is made invisible and moved
+-- off the screen, and a copy of its header bar with Blizzard's "+" button stands where it was, the guide below it.
+-- "+" brings the real tracker back until the guide is hidden or the interface reloads.
 --
--- Known cost, accepted: this runs the tracker's layout in this addon's insecure execution and taints
--- Blizzard's state until the next reload. The world map then logs blocked SetPassThroughButtons calls
--- for quest pins loaded in combat, and Edit Mode can log secret aura errors. A timer does not avoid it.
+-- Only alpha, clamping and the anchors' x offsets are changed: that runs none of Blizzard's code. Collapsing or hiding
+-- the tracker would. SetCollapsed runs its layout in this addon's code, which taints it and, through its quest buttons,
+-- the world map (blocked SetPassThroughButtons in combat); Hide runs the layout of the right-hand frame column with
+-- the action bars. Its scale must stay too: that column lays out with the child's scale, so a tracker shrunk while the
+-- column was laid out ends up far off its place and too short once it is back. Its height comes from the anchor's y
+-- offset, which is kept. When Blizzard anchors it anew, it is moved away again. Moving it waits for the end of a fight
+-- (it holds protected item buttons).
 
-local questsHandled, questsCollapsedHere
+local AWAY = 10000      -- x offset that puts the tracker right of any screen
+local stand
+
+local function EditModeOpen()
+    return EditModeManagerFrame and EditModeManagerFrame:IsShown() or false
+end
+
+local function Plain(...)
+    if not issecretvalue then return true end
+    for i = 1, select("#", ...) do
+        if issecretvalue((select(i, ...))) then return false end
+    end
+    return true
+end
+
+local function TrackerPoints(tracker)
+    local points = {}
+    for i = 1, tracker:GetNumPoints() do
+        local point = {tracker:GetPoint(i)}
+        if not Plain(unpack(point, 1, 5)) then return end
+        points[i] = point
+    end
+    return points
+end
+
+local function SamePoints(a, b)
+    if not a or not b or #a ~= #b then return false end
+    for i, p in ipairs(a) do
+        local q = b[i]
+        if p[1] ~= q[1] or p[2] ~= q[2] or p[3] ~= q[3]
+            or math.abs((p[4] or 0) - (q[4] or 0)) > 0.01 or math.abs((p[5] or 0) - (q[5] or 0)) > 0.01 then
+            return false
+        end
+    end
+    return true
+end
+
+local function SetPoints(tracker, points, dx)
+    tracker:ClearAllPoints()
+    for _, p in ipairs(points) do
+        tracker:SetPoint(p[1], p[2], p[3], (p[4] or 0) + dx, p[5] or 0)
+    end
+end
+
+-- Moves the tracker away from where Blizzard anchored it; false when it has no usable anchors.
+local function MoveAway(tracker)
+    local points = TrackerPoints(tracker)
+    if not points or #points == 0 then return false end
+    SetPoints(tracker, points, AWAY)
+    trackerAway.home, trackerAway.away = points, TrackerPoints(tracker)
+    return true
+end
+
+local function SetTrackerHidden(tracker, hide)
+    if hide then
+        trackerAway = {clamped = tracker:IsClampedToScreen()}
+        tracker:SetClampedToScreen(false)
+        if not MoveAway(tracker) then
+            tracker:SetClampedToScreen(trackerAway.clamped)
+            trackerAway = nil
+            return
+        end
+        tracker:SetAlpha(0)
+    else
+        if trackerAway then
+            -- Unless Blizzard has anchored it anew meanwhile, put it back where it was.
+            if SamePoints(TrackerPoints(tracker), trackerAway.away) then SetPoints(tracker, trackerAway.home, 0) end
+            tracker:SetClampedToScreen(trackerAway.clamped)
+        end
+        tracker:SetAlpha(1)
+        trackerAway = nil
+        -- Until the tracker can be measured again, the guide stays under its header bar.
+        if trackerOrigin then attachedAt = {trackerOrigin.left, trackerOrigin.bottom - MODULE_GAP} end
+    end
+    trackerHidden = hide
+end
 
 local function UpdateQuestTracker(guideShown)
     local tracker = ObjectiveTrackerFrame
-    if not (tracker and tracker.SetCollapsed and tracker.IsCollapsed) or InCombatLockdown() then return end
-
-    local want = ns.db.hideQuests and guideShown or false
-    if want == (questsHandled or false) then return end
-    questsHandled = want
-    if want then
-        if not tracker:IsCollapsed() then
-            questsCollapsedHere = pcall(tracker.SetCollapsed, tracker, true)
-        end
-    elseif questsCollapsedHere then
-        questsCollapsedHere = nil
-        if tracker:IsCollapsed() then pcall(tracker.SetCollapsed, tracker, false) end
+    if not tracker then return end
+    if not guideShown then trackerShownByUser = nil end
+    -- Measured again after Edit Mode (it may have been moved) or a change of the UI scale.
+    if EditModeOpen() or (trackerOrigin and trackerOrigin.uiScale ~= UIParent:GetEffectiveScale()) then
+        trackerOrigin = nil
     end
+    if InCombatLockdown() then return end
+
+    local want = ns.db.hideQuests and ns.db.tracker and guideShown and not trackerShownByUser and not EditModeOpen()
+        and trackerOrigin ~= nil or false
+    if want ~= (trackerHidden or false) then
+        SetTrackerHidden(tracker, want)
+    elseif trackerHidden then
+        -- Blizzard may have anchored it anew or shown it again; keep it away.
+        if not SamePoints(TrackerPoints(tracker), trackerAway.away) then MoveAway(tracker) end
+        if tracker:IsClampedToScreen() then tracker:SetClampedToScreen(false) end
+        if tracker:GetAlpha() > 0 then tracker:SetAlpha(0) end
+    end
+end
+
+local function Stand_OnEnter(button)
+    GameTooltip:SetOwner(button, "ANCHOR_LEFT")
+    GameTooltip:AddLine("Show the quest tracker", 1, 1, 1)
+    if trackerShownByUser then
+        GameTooltip:AddLine("It comes back when the fight is over.", 0.8, 0.8, 0.8, true)
+    elseif InCombatLockdown() then
+        GameTooltip:AddLine("During a fight it comes back when the fight is over.", 0.8, 0.8, 0.8, true)
+    end
+    GameTooltip:Show()
+end
+
+-- Looks like the tracker's own header bar (ObjectiveTrackerContainerHeaderTemplate).
+local function CreateStand()
+    stand = CreateFrame("Frame", nil, root)
+    stand:SetHeight(32)
+    stand.Background = stand:CreateTexture(nil, "BACKGROUND")
+    stand.Background:SetAtlas("ui-questtracker-primary-objective-header", true)
+    stand.Background:SetPoint("CENTER")
+    stand.Text = stand:CreateFontString(nil, "ARTWORK",
+        ObjectiveTrackerHeaderFont and "ObjectiveTrackerHeaderFont" or "GameFontNormalMed2")
+    stand.Text:SetPoint("LEFT", 7, 0)
+    stand.Text:SetWidth(208)
+    stand.Text:SetJustifyH("LEFT")
+    stand.Text:SetWordWrap(false)
+    stand.Button = CreateFrame("Button", nil, stand)
+    stand.Button:SetSize(18, 19)
+    stand.Button:SetPoint("RIGHT", -1, 0)
+    stand.Button:SetNormalAtlas("ui-questtrackerbutton-expand-all")
+    stand.Button:SetPushedAtlas("ui-questtrackerbutton-expand-all-pressed")
+    stand.Button:SetHighlightAtlas("ui-questtrackerbutton-red-highlight", "ADD")
+    stand.Button:SetScript("OnClick", function(button)
+        PlaySound(SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_ON)
+        trackerShownByUser = true
+        ns.Refresh()
+        if button:IsMouseOver() then Stand_OnEnter(button) end
+    end)
+    stand.Button:SetScript("OnEnter", Stand_OnEnter)
+    stand.Button:SetScript("OnLeave", GameTooltip_Hide)
+end
+
+local function PlaceStand()
+    if not (trackerHidden and trackerOrigin) then
+        if stand then stand:Hide() end
+        return
+    end
+    if not stand then CreateStand() end
+    local tracker = ObjectiveTrackerFrame
+    local text = tracker.Header and tracker.Header.Text and tracker.Header.Text:GetText()
+    stand.Text:SetText(text or TRACKER_ALL_OBJECTIVES or "All Objectives")
+    stand:SetWidth(trackerOrigin.width)
+    stand:ClearAllPoints()
+    stand:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", trackerOrigin.left, trackerOrigin.top)
+    stand:Show()
 end
 
 --------------------------------------------------------------------------------------------------
@@ -935,6 +1267,9 @@ end
 local function Disable()
     if root then root:Hide() end
     lastSignature = nil
+    if trackerHidden and ObjectiveTrackerFrame and not InCombatLockdown() then
+        SetTrackerHidden(ObjectiveTrackerFrame, false)
+    end
     local rxp = _G.RXP
     if type(rxp) == "table" then
         for _, window in ipairs(GuideWindows(rxp)) do ns.Unstow(window) end
@@ -976,6 +1311,7 @@ local function Update(rxp)
     listIsFull = #upcoming >= UpcomingCount()
 
     local left, top = Place()
+    if not left then return end
     local floor
     if ns.db.limit then
         -- Until the line has been dragged somewhere, the guide gets DEFAULT_WINDOW of height, but
@@ -986,7 +1322,7 @@ local function Update(rxp)
         -- An open quest tracker can reach down to the line or past it. The guide keeps room for its
         -- current step then, otherwise nothing but its bar would be left.
         local tracker = ObjectiveTrackerFrame
-        local open = tracker and tracker.IsCollapsed and not tracker:IsCollapsed()
+        local open = tracker and not trackerHidden and tracker.IsCollapsed and not tracker:IsCollapsed()
         floor = math.min(ns.db.bottom - top, open and -MIN_ROOM or -HEADER_HEIGHT)
     end
     AddToSignature(signature, title, floor and math.floor(floor) or "")
@@ -998,6 +1334,7 @@ local function Update(rxp)
         Draw(title, tooltipTitle, active, upcoming, floor)
     end
     PlaceGrip(left, top)
+    PlaceStand()
     root:Show()
 end
 

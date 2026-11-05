@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.0.13
+
+- The guide now takes the quest tracker's place instead of collapsing it: Blizzard's tracker is hidden while a guide is shown, and a copy of its header bar with the + button brings it back. Collapsing it from addon code tainted the tracker and the world map, which logged blocked actions in combat. This fixes the known issue of v1.0.12; the option is now called "Guide in place of the quest tracker".
+- The guide no longer reads the quest tracker's position while the game is still laying it out. That read could taint the tracker even when it was not collapsed, and the world map then logged blocked actions in combat.
+- The auction house button on guide lines also works with Auctionator: it puts the item with the quantity still needed on the Auctionator shopping list "RestedXP Guide".
+- It also works with Auctioneer, which has no shopping list: it puts the item on the snatch list of Auctioneer's Search UI at up to its market price. An item already on that list keeps its price.
+
 ## v1.0.12
 
 - With the Forever Auction addon: a small auction house button on guide lines that want an item from the auction house puts it on its shopping list.
