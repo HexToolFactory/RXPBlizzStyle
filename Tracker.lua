@@ -6,11 +6,13 @@ local addonName, ns = ...
 local WIDTH = 260
 local HEADER_HEIGHT = 25
 local BLOCK_INDENT = 20
+local SHOP_SIZE = 14
 local BLOCK_GAP = 10
 local LINE_GAP = 4
 local MODULE_GAP = 10
 local MAX_UPCOMING_SCAN = 400
 local DEFAULT_WINDOW = 350
+local MIN_ROOM = 150   -- what the guide keeps below an open quest tracker, cut-off line or not
 
 local COLORS = {
     title = {"Header", 0.75, 0.61, 0},
@@ -389,6 +391,30 @@ local function CreateHeader(collapseKey)
     return header
 end
 
+local function Shop_Update(button)
+    local onList = ForeverAuction_ShoppingQty and button.item and ForeverAuction_ShoppingQty(button.item.id) or 0
+    button:SetAlpha(onList > 0 and 0.45 or 1)
+end
+
+local function Shop_OnEnter(button)
+    Row_OnEnter(button:GetParent())
+    local item = button.item
+    if not item then return end
+    local name = C_Item and C_Item.GetItemNameByID and C_Item.GetItemNameByID(item.id)
+    GameTooltip:SetOwner(button, "ANCHOR_LEFT")
+    GameTooltip:AddLine("Add to the shopping list", 1, 1, 1)
+    GameTooltip:AddLine((name or "Item") .. " x" .. item.qty, 0.8, 0.8, 0.8)
+    GameTooltip:AddLine("Forever Auction shows it at the auction house.", 0.8, 0.8, 0.8, true)
+    GameTooltip:Show()
+end
+
+local function Shop_OnClick(button)
+    if button.item and ForeverAuction_AddToShopping then
+        ForeverAuction_AddToShopping(button.item.id, button.item.qty, "Guide")
+        Shop_Update(button)
+    end
+end
+
 local function CreateRow()
     local font = ObjectiveTrackerLineFont and "ObjectiveTrackerLineFont" or "GameFontHighlight"
     local row = CreateFrame("Button", nil, root)
@@ -415,6 +441,15 @@ local function CreateRow()
     row.Toggle:SetScript("OnClick", Toggle_OnClick)
     row.Toggle:SetScript("OnEnter", function() Row_OnEnter(row) end)
     row.Toggle:SetScript("OnLeave", function() Row_OnLeave(row) end)
+
+    row.Shop = CreateFrame("Button", nil, row)
+    row.Shop:SetSize(SHOP_SIZE, SHOP_SIZE)
+    row.Shop:SetPoint("TOPRIGHT", 0, 1)
+    row.Shop:SetNormalTexture("Interface\\Minimap\\Tracking\\Auctioneer")
+    row.Shop:SetHighlightTexture("Interface\\Minimap\\Tracking\\Auctioneer", "ADD")
+    row.Shop:SetScript("OnClick", Shop_OnClick)
+    row.Shop:SetScript("OnEnter", Shop_OnEnter)
+    row.Shop:SetScript("OnLeave", function(button) Row_OnLeave(button:GetParent()) end)
 
     row.Text = row:CreateFontString(nil, "ARTWORK", font)
     row.Text:SetJustifyH("LEFT")
@@ -565,6 +600,29 @@ local function QuestMissing(rxp, guide, element, stepIndex, current)
     return true
 end
 
+local function MentionsAuctionHouse(step)
+    if step.ah then return true end
+    for _, element in ipairs(step.elements or {}) do
+        for _, text in ipairs({element.text or "", element.rawtext or "", element.tooltipText or ""}) do
+            if type(text) == "string" and text:find("Auction House", 1, true) then return true end
+        end
+    end
+    return false
+end
+
+-- What the Forever Auction button of a line would put on the shopping list: an item the step still wants, in a step
+-- that names the auction house. Nothing without that addon, so nobody else ever sees the button.
+function ns.ShopItem(step, element)
+    if not ForeverAuction_AddToShopping then return end
+    if element.tag ~= "collect" and element.tag ~= "buy" then return end
+    if type(element.id) ~= "number" or element.completed or element.skip then return end
+    if not MentionsAuctionHouse(step) then return end
+    local count = C_Item and C_Item.GetItemCount and C_Item.GetItemCount(element.id) or 0
+    local qty = tonumber(element.qty) or 1
+    if qty >= 1000 then qty = 1 end         -- guides write "as many as there are" with a huge number
+    return {id = element.id, qty = math.max(qty - count, 1)}
+end
+
 local function ActiveBlocks(rxp, signature)
     local blocks = {}
     local guide, current = rxp.currentGuide, rxp.GetGuideProgress()
@@ -581,8 +639,9 @@ local function ActiveBlocks(rxp, signature)
                     local state = element.textOnly and "note" or
                                       ((element.completed or element.skip) and "done" or "todo")
                     local missing = state == "todo" and QuestMissing(rxp, guide, element, step.index, current)
-                    block.lines[#block.lines + 1] = {text = icon .. text, state = state, element = element, missing = missing}
-                    AddToSignature(signature, state, icon, text, missing)
+                    local shop = ns.ShopItem(step, element)
+                    block.lines[#block.lines + 1] = {text = icon .. text, state = state, element = element, missing = missing, shop = shop}
+                    AddToSignature(signature, state, icon, text, missing, shop and shop.id, shop and shop.qty)
                 end
             end
             if block.title or #block.lines > 0 then blocks[#blocks + 1] = block end
@@ -687,7 +746,11 @@ local function PlaceRow(kind, line, block, y)
     row.Toggle:SetShown(row.element ~= nil and row.state ~= "note" and not block.upcoming)
     row.Text:ClearAllPoints()
     row.Text:SetPoint("TOPLEFT", indent, 0)
-    row.Text:SetWidth(width - indent)
+    local shop = kind == "line" and line.shop or nil
+    row.Shop.item = shop
+    row.Shop:SetShown(shop ~= nil)
+    if shop then Shop_Update(row.Shop) end
+    row.Text:SetWidth(width - indent - (shop and SHOP_SIZE + 2 or 0))
     local text = kind == "line" and line.text or block.title
     -- Names in guide text carry their own colours; a line that is red as a whole must not.
     if row.missing then text = (text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")) end
@@ -831,6 +894,10 @@ end
 --------------------------------------------------------------------------------------------------
 -- Blizzard's quest tracker is of little use next to a guide: collapse it to its header bar while a
 -- guide is shown. Done once per change so that expanding it by hand sticks, and never in combat.
+--
+-- Known cost, accepted: this runs the tracker's layout in this addon's insecure execution and taints
+-- Blizzard's state until the next reload. The world map then logs blocked SetPassThroughButtons calls
+-- for quest pins loaded in combat, and Edit Mode can log secret aura errors. A timer does not avoid it.
 
 local questsHandled, questsCollapsedHere
 
@@ -916,7 +983,11 @@ local function Update(rxp)
         if not ns.db.bottom then
             ns.db.bottom = math.max(top - DEFAULT_WINDOW, UIParent:GetHeight() / root:GetScale() * 0.2)
         end
-        floor = math.min(ns.db.bottom - top, -HEADER_HEIGHT)
+        -- An open quest tracker can reach down to the line or past it. The guide keeps room for its
+        -- current step then, otherwise nothing but its bar would be left.
+        local tracker = ObjectiveTrackerFrame
+        local open = tracker and tracker.IsCollapsed and not tracker:IsCollapsed()
+        floor = math.min(ns.db.bottom - top, open and -MIN_ROOM or -HEADER_HEIGHT)
     end
     AddToSignature(signature, title, floor and math.floor(floor) or "")
 
