@@ -1,0 +1,14 @@
+## Interface: 16001
+## Title: RestedXP Blizzard Style
+## Notes: Shows RestedXP guide steps in the style of the quest tracker and on the waypoint arrow.
+## Author: HexToolFactory
+## Version: @project-version@
+## Category: Quests
+## Dependencies: RXPGuides
+## OptionalDeps: TomTom
+## SavedVariables: RXPBlizzStyleDB
+
+Core.lua
+Tracker.lua
+Arrow.lua
+Options.lua
