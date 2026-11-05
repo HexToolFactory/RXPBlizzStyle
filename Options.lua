@@ -20,7 +20,7 @@ local OPTIONS = {
     }, {
         key = "hideQuests",
         name = "Collapse the quest tracker",
-        tooltip = "Collapses Blizzard's quest tracker to its header bar while a guide is shown. Use the button on that bar to look at your quests.",
+        tooltip = "Collapses Blizzard's quest tracker to its header bar while a guide is shown. Use the button on that bar to look at your quests. Side effect: right-clicking a quest pin on the world map may not zoom out during combat, and errors about blocked actions can be logged.",
     }, {
         key = "upcoming",
         name = "Upcoming steps",
