@@ -995,7 +995,36 @@ end
 
 local attachedAt     -- {left, top} below the quest tracker, from the last resolved layout
 
+local function Secret(...)
+    if not issecretvalue then return false end
+    for i = 1, select("#", ...) do
+        if issecretvalue((select(i, ...))) then return true end
+    end
+    return false
+end
+
+-- A hidden tracker (nothing tracked) is never laid out, so it has no position of its own. Its anchor still says where
+-- it would be: worked out from the frame it hangs on, once that one is laid out. Only for a single TOP* anchor, which
+-- is how Blizzard and Edit Mode place it; returns the tracker's would-be top left in its own coordinates.
+local function HiddenTrackerAnchor(tracker)
+    if tracker:GetNumPoints() ~= 1 then return end
+    local point, relative, relativePoint, x, y = tracker:GetPoint(1)
+    if Secret(point, relative, relativePoint, x, y) or not point or not relativePoint or not point:find("TOP") then return end
+    relative = relative or tracker:GetParent()
+    if not relative or not Resolved(relative) then return end
+    local l, r, t, b = relative:GetLeft(), relative:GetRight(), relative:GetTop(), relative:GetBottom()
+    local width = tracker:GetWidth()
+    if not (l and r and t and b and width) or Secret(l, r, t, b, width) then return end
+    local ratio = relative:GetEffectiveScale() / tracker:GetEffectiveScale()
+    local rx = relativePoint:find("LEFT") and l or relativePoint:find("RIGHT") and r or (l + r) / 2
+    local ry = relativePoint:find("TOP") and t or relativePoint:find("BOTTOM") and b or (t + b) / 2
+    local px, top = rx * ratio + (x or 0), ry * ratio + (y or 0)
+    local left = point:find("LEFT") and px or point:find("RIGHT") and px - width or px - width / 2
+    return left, top
+end
+
 local function TrackerAnchor(tracker)
+    if not tracker:IsShown() and not Resolved(tracker) then return HiddenTrackerAnchor(tracker) end
     if not Resolved(tracker) or not tracker:GetLeft() then return end
     local left, top = tracker:GetLeft(), tracker:GetTop()
     if tracker:IsVisible() then
@@ -1021,6 +1050,19 @@ local function TrackerAnchor(tracker)
     return left, top
 end
 
+local function DefaultPosition(scale)
+    return UIParent:GetWidth() / scale - WIDTH - 60, UIParent:GetHeight() / scale - 260
+end
+
+-- The last spot below the quest tracker is kept across reloads, together with the guide's scale it belongs to.
+local function RememberAttached(left, top, scale)
+    local saved = ns.db.attachedAt
+    if saved and saved.scale == scale and math.abs(saved.left - left) < 0.5 and math.abs(saved.top - top) < 0.5 then
+        return
+    end
+    ns.db.attachedAt = {left = left, top = top, scale = scale}
+end
+
 local function Place()
     local tracker = ObjectiveTrackerFrame
     local replaced = trackerHidden and trackerOrigin   -- the origin is gone only until it can be measured again
@@ -1040,25 +1082,34 @@ local function Place()
     local left, top
     if ns.db.attach and tracker and replaced then
         left, top = trackerOrigin.left, trackerOrigin.bottom - MODULE_GAP
+        RememberAttached(left, top, scale)
     elseif ns.db.attach and tracker and trackerHidden then
         if attachedAt then left, top = attachedAt[1], attachedAt[2] end
     elseif ns.db.attach and tracker then
         left, top = TrackerAnchor(tracker)
         if left then
             attachedAt = {left, top}
+            RememberAttached(left, top, scale)
         elseif attachedAt then
             left, top = attachedAt[1], attachedAt[2]
+        end
+    end
+    if not left and ns.db.attach and tracker then
+        -- The tracker has no position yet (right after loading, or the game never lays it out because it stays
+        -- hidden). Waiting for it could keep the guide away for good: until it can be measured, the guide stands
+        -- where it was attached last time, or at the default place, without making that the detached position.
+        local saved = ns.db.attachedAt
+        if saved and math.abs((saved.scale or 0) - scale) < 0.001 then
+            left, top = saved.left, saved.top
         else
-            return              -- right after loading, before the game's first layout pass: try again next update
+            left, top = DefaultPosition(scale)
         end
     end
     if not left then
         if not ns.db.position then
             -- Detached for the first time: stay where it is.
-            ns.db.position = {
-                left = root:GetLeft() or (UIParent:GetWidth() / scale - WIDTH - 60),
-                top = root:GetTop() or (UIParent:GetHeight() / scale - 260),
-            }
+            local defaultLeft, defaultTop = DefaultPosition(scale)
+            ns.db.position = {left = root:GetLeft() or defaultLeft, top = root:GetTop() or defaultTop}
         end
         left, top = ns.db.position.left, ns.db.position.top
     end
