@@ -8,3 +8,4 @@ ignore:
   - README.md
   - .gitignore
   - .github
+  - media
