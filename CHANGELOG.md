@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.0.14
+
+- The guide no longer stays hidden when the quest tracker has no position: with nothing tracked, Blizzard hides its tracker and never lays it out, and the guide waited for it forever. It now stands where the hidden tracker would be, worked out from the frame the tracker is attached to.
+- The guide remembers its last spot below the quest tracker across reloads and uses it until the tracker can be measured again, so it no longer appears late or at the wrong place after loading.
+
 ## v1.0.13
 
 - The guide now takes the quest tracker's place instead of collapsing it: Blizzard's tracker is hidden while a guide is shown, and a copy of its header bar with the + button brings it back. Collapsing it from addon code tainted the tracker and the world map, which logged blocked actions in combat. This fixes the known issue of v1.0.12; the option is now called "Guide in place of the quest tracker".
