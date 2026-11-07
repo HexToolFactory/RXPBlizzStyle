@@ -22,6 +22,10 @@ local OPTIONS = {
         name = "Guide in place of the quest tracker",
         tooltip = "While a guide is shown, Blizzard's quest tracker is hidden and the guide takes its place under a copy of its header bar. The + button on that bar brings your quests back until the guide is hidden or the interface reloads. During a fight they come back when it is over.",
     }, {
+        key = "questie",
+        name = "Questie tooltips on quest lines",
+        tooltip = "With Questie: hovering a line that picks up, works on or hands in a quest shows the tooltip of that quest's pin on the map. Hold Shift for experience, money and the rest of the quest chain. Questie has it only for quests it marks on the map.",
+    }, {
         key = "upcoming",
         name = "Upcoming steps",
         tooltip = "How many of the next steps are listed below the current step. Scroll over the list to look further ahead.",

@@ -14,6 +14,7 @@ ns.defaults = {
     attach = true,        -- keep that display where the quest tracker's next section would be
     limit = true,         -- cut that display off at a line on the screen (RXPBlizzStyleDB.bottom)
     hideQuests = true,    -- hide Blizzard's quest tracker while a guide is shown
+    questie = true,       -- Questie's map pin tooltip when hovering a quest line
     upcoming = 3,         -- how many upcoming steps to list
     arrowText = true,     -- write the current step under the waypoint arrow
     tomtom = true,        -- hand the waypoint to TomTom's arrow when TomTom is loaded
