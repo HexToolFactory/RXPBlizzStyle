@@ -120,11 +120,92 @@ local function SetHoveredBlock(block)
     end
 end
 
+-- Questie's map pin tooltip on quest lines. Hovering a line that picks up, works on or hands in a quest
+-- shows what hovering that quest's pin on the map shows, Shift included (experience, money, the rest of
+-- the chain). Questie builds that tooltip from its map icons, so it exists only for quests Questie marks
+-- on the map: available ones at their giver, accepted ones at their objectives, finished ones at their
+-- turn-in. Questie redraws it on Shift only over the map and the minimap; for the guide this does.
+local QUESTIE_TYPE = {accept = "available", turnin = "complete"}
+local questieRow, questieIcon
+
+local function QuestieModule(name)
+    local loader, questie = _G.QuestieLoader, _G.Questie
+    if type(loader) ~= "table" or type(questie) ~= "table" or not (questie.API and questie.API.isReady) then return end
+    local ok, module = pcall(loader.ImportModule, loader, name)
+    if ok and type(module) == "table" then return module end
+end
+
+-- One world map icon per objective of the quest, those of the kind the line is about first.
+local function QuestieIcons(questId, tag)
+    local map = QuestieModule("QuestieMap")
+    if not (map and map.GetFramesForQuest) then return end
+    local ok, frames = pcall(map.GetFramesForQuest, map, questId)
+    if not ok or type(frames) ~= "table" then return end
+    local wanted = QUESTIE_TYPE[tag]
+    local matching, other, seen = {}, {}, {}
+    for _, frame in pairs(frames) do
+        local data = frame.data
+        -- Pooled frames are reused: the name list can point at a frame of another quest by now.
+        if type(data) == "table" and data.Id == questId and frame.miniMapIcon == false and frame.texture
+            and data.Type ~= "manual" then
+            local key = tostring(data.Type) .. ":" .. tostring(data.ObjectiveIndex or 0)
+            if not seen[key] then
+                seen[key] = true
+                local objective = data.Type ~= "available" and data.Type ~= "complete"
+                if data.Type == wanted or (not wanted and objective) then
+                    matching[#matching + 1] = frame
+                else
+                    other[#other + 1] = frame
+                end
+            end
+        end
+    end
+    local icons = #matching > 0 and matching or other
+    if #icons > 0 then return icons end
+end
+
+local function HideQuestieTooltip()
+    if not questieRow then return end
+    local row, icon = questieRow, questieIcon
+    questieRow, questieIcon = nil, nil
+    if GameTooltip:GetOwner() == row then GameTooltip:Hide() end
+    GameTooltip._Rebuild = nil
+    GameTooltip.ShownAsMapIcon = false
+    local frames = QuestieModule("QuestieFrame")
+    if frames and frames.ResetHoverHighlights and icon and icon.data then pcall(frames.ResetHoverHighlights, icon) end
+end
+
+local function ShowQuestieTooltip(row)
+    local element = row.quest
+    if not (element and ns.db.questie) then return false end
+    local tooltips = QuestieModule("MapIconTooltip")
+    if not (tooltips and tooltips.ShowOnTooltip) then return false end
+    local rxp = _G.RXP
+    local questId = element.questId
+    if type(rxp) == "table" and rxp.GetQuestId then questId = rxp.GetQuestId(questId, nil, true) or questId end
+    local icons = QuestieIcons(questId, element.tag)
+    if not icons then return false end
+    HideQuestieTooltip()
+    GameTooltip:Hide()      -- Questie skips a call that comes right after another while the tooltip is shown
+    questieRow, questieIcon = row, icons[1]
+    local ok = pcall(tooltips.ShowOnTooltip, icons[1], GameTooltip, row, icons)
+    if not ok or not GameTooltip:IsShown() or GameTooltip:GetOwner() ~= row then
+        HideQuestieTooltip()
+        return false
+    end
+    return true
+end
+
 local function Row_OnEnter(row)
     SetHoveredBlock(row.block)
     local tooltip = row.element and row.element.tooltip
     if type(tooltip) ~= "string" or tooltip == "" then tooltip = nil end
-    if tooltip or row.missing then
+    if ShowQuestieTooltip(row) then
+        if tooltip or row.missing then GameTooltip:AddLine(" ") end
+        if tooltip then GameTooltip:AddLine(tooltip, 1, 1, 1, true) end
+        if row.missing then GameTooltip:AddLine("You do not have this quest.", 1, 0.1, 0.1) end
+        GameTooltip:Show()
+    elseif tooltip or row.missing then
         GameTooltip:SetOwner(row, "ANCHOR_LEFT")
         if tooltip then GameTooltip:AddLine(tooltip, 1, 1, 1, true) end
         if row.missing then GameTooltip:AddLine("You do not have this quest.", 1, 0.1, 0.1) end
@@ -134,8 +215,17 @@ end
 
 local function Row_OnLeave(row)
     if hoveredBlock == row.block then SetHoveredBlock(nil) end
+    if questieRow == row then HideQuestieTooltip() end
     if GameTooltip:GetOwner() == row then GameTooltip:Hide() end
 end
+
+local modifierWatcher = CreateFrame("Frame")
+modifierWatcher:RegisterEvent("MODIFIER_STATE_CHANGED")
+modifierWatcher:SetScript("OnEvent", function(_, _, key)
+    if key ~= "LSHIFT" and key ~= "RSHIFT" then return end
+    local row = questieRow
+    if row and row:IsVisible() and row:IsMouseOver() and GameTooltip:GetOwner() == row then Row_OnEnter(row) end
+end)
 
 -- The step before `from` that can become the current step again: sticky steps never are, hidden
 -- ones are helper steps of the guide.
@@ -767,6 +857,14 @@ function ns.ShopItem(step, element)
     return {id = element.id, qty = math.max(qty - count, 1)}
 end
 
+-- The line's element when it picks up, works on or hands in a quest (for Questie's tooltip).
+local function QuestElement(element)
+    if (element.tag == "accept" or element.tag == "turnin" or element.tag == "complete")
+        and type(element.questId) == "number" and element.questId > 0 then
+        return element
+    end
+end
+
 local function ActiveBlocks(rxp, signature)
     local blocks = {}
     local guide, current = rxp.currentGuide, rxp.GetGuideProgress()
@@ -784,7 +882,8 @@ local function ActiveBlocks(rxp, signature)
                                       ((element.completed or element.skip) and "done" or "todo")
                     local missing = state == "todo" and QuestMissing(rxp, guide, element, step.index, current)
                     local shop = ns.ShopItem(step, element)
-                    block.lines[#block.lines + 1] = {text = icon .. text, state = state, element = element, missing = missing, shop = shop}
+                    block.lines[#block.lines + 1] = {text = icon .. text, state = state, element = element, missing = missing, shop = shop,
+                        quest = QuestElement(element)}
                     AddToSignature(signature, state, icon, text, missing, shop and shop.id, shop and shop.qty)
                 end
             end
@@ -821,7 +920,8 @@ local function UpcomingLines(rxp, guide, step, index, current)
             lines = lines or {}
             -- Objectives of a step that is not active yet have no text of their own and count as
             -- notes here, so the quest check does not depend on the state.
-            lines[#lines + 1] = {text = text, state = state, missing = QuestMissing(rxp, guide, element, index, current)}
+            lines[#lines + 1] = {text = text, state = state, missing = QuestMissing(rxp, guide, element, index, current),
+                quest = QuestElement(element)}
         end
     end
     return lines
@@ -882,6 +982,7 @@ local function PlaceRow(kind, line, block, y)
     row.state = kind == "line" and line.state or nil
     row.element = kind == "line" and line.element or nil
     row.missing = kind == "line" and line.missing or false
+    row.quest = kind == "line" and line.quest or nil
 
     local indent = kind == "line" and dashWidth or 0
     local width = WIDTH - BLOCK_INDENT

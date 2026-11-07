@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.0.15
+
+- With Questie: hovering a quest line (pick up, work on, hand in; current and upcoming steps) shows the tooltip of that quest's pin on Questie's map, and Shift shows experience, money and the rest of the quest chain there too. Option "Questie tooltips on quest lines".
+
 ## v1.0.14
 
 - The guide no longer stays hidden when the quest tracker has no position: with nothing tracked, Blizzard hides its tracker and never lays it out, and the guide waited for it forever. It now stands where the hidden tracker would be, worked out from the frame the tracker is attached to.
