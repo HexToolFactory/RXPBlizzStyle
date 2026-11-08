@@ -1,6 +1,8 @@
 # Changelog
 
-## v1.0.16
+## v1.1.0
+
+The same as v1.0.16, which went out a few minutes earlier under the old numbering; the new window starts version 1.1.
 
 This version adds two files: restart the game after updating, `/reload` is not enough.
 
