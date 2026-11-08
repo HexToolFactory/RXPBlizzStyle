@@ -13,6 +13,10 @@ Requires the RestedXP Guides addon. This is an independent addon and is not made
 - The guide sits directly below the quest tracker, or anywhere you drag it.
 - The guide can be cut off at a line so it does not cover what sits below it. Move the mouse over the guide and drag the yellow line at its lower end.
 - The current step is written below the waypoint arrow. If [TomTom](https://www.curseforge.com/wow/addons/tomtom) is installed, its arrow can point to the step instead.
+- With [Questie](https://www.curseforge.com/wow/addons/questie): hovering a quest line shows Questie's tooltip for that quest.
+- Missing Prerequisites (the quest-giver icon on the header bar, or `/rxpstyle prereqs`): every quest of the current guide you cannot pick up yet because a quest before it is not done and the guide does not do it, with the whole chain of quests that unlocks it, its objectives, the experience of the whole chain, and buttons to show where each quest starts, ends and is done on the map, or to share it. Needs Questie.
+
+![Missing Prerequisites window](media/missing-prerequisites.png)
 
 ## Options
 

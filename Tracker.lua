@@ -175,8 +175,8 @@ local function HideQuestieTooltip()
     if frames and frames.ResetHoverHighlights and icon and icon.data then pcall(frames.ResetHoverHighlights, icon) end
 end
 
-local function ShowQuestieTooltip(row)
-    local element = row.quest
+-- owner: the frame the tooltip belongs to; element: {questId = , tag = } as in a guide step.
+local function ShowQuestieTooltip(row, element)
     if not (element and ns.db.questie) then return false end
     local tooltips = QuestieModule("MapIconTooltip")
     if not (tooltips and tooltips.ShowOnTooltip) then return false end
@@ -200,7 +200,7 @@ local function Row_OnEnter(row)
     SetHoveredBlock(row.block)
     local tooltip = row.element and row.element.tooltip
     if type(tooltip) ~= "string" or tooltip == "" then tooltip = nil end
-    if ShowQuestieTooltip(row) then
+    if ShowQuestieTooltip(row, row.quest) then
         if tooltip or row.missing then GameTooltip:AddLine(" ") end
         if tooltip then GameTooltip:AddLine(tooltip, 1, 1, 1, true) end
         if row.missing then GameTooltip:AddLine("You do not have this quest.", 1, 0.1, 0.1) end
@@ -224,8 +224,18 @@ modifierWatcher:RegisterEvent("MODIFIER_STATE_CHANGED")
 modifierWatcher:SetScript("OnEvent", function(_, _, key)
     if key ~= "LSHIFT" and key ~= "RSHIFT" then return end
     local row = questieRow
-    if row and row:IsVisible() and row:IsMouseOver() and GameTooltip:GetOwner() == row then Row_OnEnter(row) end
+    if row and row:IsVisible() and row:IsMouseOver() and GameTooltip:GetOwner() == row then
+        local onEnter = row:GetScript("OnEnter")
+        if onEnter then onEnter(row) end
+    end
 end)
+
+-- For the prerequisites window.
+ns.QuestieModule = QuestieModule
+ns.ShowQuestieTooltip = ShowQuestieTooltip
+function ns.HideQuestieTooltip(owner)
+    if questieRow == owner then HideQuestieTooltip() end
+end
 
 -- The step before `from` that can become the current step again: sticky steps never are, hidden
 -- ones are helper steps of the guide.
@@ -720,7 +730,20 @@ local function Build()
         GameTooltip:Show()
     end)
     activeHeader.Report:SetScript("OnLeave", GameTooltip_Hide)
-    activeHeader.Text:SetWidth(WIDTH - 114)
+    activeHeader.Prereqs = CreateFrame("Button", nil, activeHeader)
+    activeHeader.Prereqs:SetSize(16, 16)
+    activeHeader.Prereqs:SetPoint("RIGHT", activeHeader.Report, "LEFT", -2, 0)
+    activeHeader.Prereqs:SetNormalTexture("Interface\\GossipFrame\\AvailableQuestIcon")
+    activeHeader.Prereqs:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight", "ADD")
+    activeHeader.Prereqs:SetScript("OnClick", function() ns.TogglePrereqs() end)
+    activeHeader.Prereqs:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        GameTooltip:AddLine("Missing prerequisites", 1, 1, 1)
+        GameTooltip:AddLine("Quests of this guide you cannot pick up yet, with the quests that unlock them. Needs Questie.", 0.8, 0.8, 0.8, true)
+        GameTooltip:Show()
+    end)
+    activeHeader.Prereqs:SetScript("OnLeave", GameTooltip_Hide)
+    activeHeader.Text:SetWidth(WIDTH - 132)
     upcomingHeader = CreateHeader("upcomingCollapsed")
     upcomingHeader.Text:SetText("Upcoming Steps")
 

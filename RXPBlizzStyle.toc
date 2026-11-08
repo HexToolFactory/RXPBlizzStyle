@@ -13,3 +13,5 @@ Core.lua
 Tracker.lua
 Arrow.lua
 Options.lua
+PrereqFixes.lua
+Prereqs.lua

@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.0.16
+
+This version adds two files: restart the game after updating, `/reload` is not enough.
+
+- New window "Missing Prerequisites" (the quest-giver icon on the guide's header bar, or `/rxpstyle prereqs`), in the look of the DungeonJournal addon. It lists every quest of the current guide that you cannot pick up yet because a quest before it is not done and the guide does not do it, or that the guide hands in but you never picked up, and for the selected quest the whole chain of quests that unlocks it, earliest first: level, who starts it and where, and whether you can take it now. Hovering one shows Questie's tooltip; clicking one sets a TomTom waypoint to where it starts. Needs Questie for the prerequisites.
+- Quests Questie's database does not know are listed there too, greyed out, and saved with the addon's settings; their prerequisites can be added by hand in PrereqFixes.lua, which comes before Questie's data.
+- Quest experience (at your level, as in Questie's tooltips), to weigh doing a chain against skipping it: the whole chain's (the missing quests, the guide's quest and the rest of the chain after it) above the list and in the left list, with a breakdown, each quest's in its row, and the quests after the guide's quest listed with theirs.
+- Every quest in a chain shows its objective and has three Show on Map buttons: Starts and Ends open the world map with a pin where the quest starts or is handed in, Objective marks every spot where it is done (the NPCs to kill, the objects to use, whoever drops the items, the places to find), on your own map when it has some, else the map with the most (plus a TomTom waypoint with TomTom; the window steps aside until the map closes), and a Share button in the DungeonJournal look, which shares the quest with your group once it is in your quest log. Shift-click on Share or on the quest links it in chat.
+
 ## v1.0.15
 
 - With Questie: hovering a quest line (pick up, work on, hand in; current and upcoming steps) shows the tooltip of that quest's pin on Questie's map, and Shift shows experience, money and the rest of the quest chain there too. Option "Questie tooltips on quest lines".

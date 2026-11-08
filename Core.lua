@@ -307,8 +307,11 @@ end
 
 SLASH_RXPBLIZZSTYLE1 = "/rxpstyle"
 SlashCmdList.RXPBLIZZSTYLE = function(message)
-    if strtrim(message or ""):lower() == "report" then
+    local command = strtrim(message or ""):lower()
+    if command == "report" then
         ns.ShowReport()
+    elseif command == "prereqs" or command == "prerequisites" then
+        ns.TogglePrereqs()
     else
         ns.OpenOptions()
     end
