@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.2.0
+
+- New settings page Options > AddOns > RestedXP Blizzard Style > Display: Scale, Width, Height and Anchor (Top / Bottom). Attached, the guide stays below the quest tracker and moves with it in Edit Mode.
+- Anchor Bottom works like RestedXP's "Current step frame anchor": the current step at the bottom, the next steps above it, the guide growing upwards.
+- The yellow line now sets the guide's height instead of a fixed line on the screen; the old line is taken over as the height. "Cut the guide off at a line" is now "Limit the guide's height".
+- A small info button next to a step's title shows the quests that follow the step's quests in their chains (from Questie): level, experience, whether you did them, and whether this guide does them (with its step) or not.
+- Missing Prerequisites no longer lists a quest the game hands out when the guide turns in the quest before it (like The Missing Diplomat after the fight at Sentry Point); quests whose step RestedXP only does when you already have them are marked optional.
+
 ## v1.1.1
 
 - Hovering a red quest line (a quest you do not have) now says which quest it is, where it starts and which quests have to be done first, or that you can pick it up now; clicking the line opens Missing Prerequisites at that quest.

@@ -66,10 +66,29 @@ end
 -- The guide's quests: {{id, step, kind}, ...} in guide order, kind "accept" for the ones it picks up and "handin"
 -- for the ones it only works on or hands in, and the quests it takes care of itself: the ones it picks up, and
 -- the ones it hands in while they are in the quest log. Handing in a quest nobody picked up does not count.
+-- The quests a step is only meant for when the player already has them (.isOnQuest / .isQuestComplete):
+-- without the quest RestedXP skips the step on purpose.
+local function OnlyIfTaken(rxp, step)
+    local only = {}
+    for _, element in ipairs(step.elements or {}) do
+        if (element.tag == "isOnQuest" or element.tag == "isQuestComplete") and not element.reverse then
+            local ids = type(element.questIds) == "table" and element.questIds or {element.questId}
+            for _, id in pairs(ids) do
+                if type(id) == "number" then
+                    only[id] = true
+                    if rxp.GetQuestId then only[rxp.GetQuestId(id, nil, true) or id] = true end
+                end
+            end
+        end
+    end
+    return only
+end
+
 local function GuideQuests(rxp, guide, player)
     local covered, order, stepOf, accepted = {}, {}, {}, {}
     local work = {}
     for index, step in ipairs(guide.steps or {}) do
+        local only = OnlyIfTaken(rxp, step)
         for _, element in ipairs(step.elements or {}) do
             local id = element.questId
             local tag = element.tag
@@ -84,7 +103,7 @@ local function GuideQuests(rxp, guide, player)
                     end
                 else
                     if tag == "turnin" and IsInLog(real, player) then covered[id], covered[real] = true, true end
-                    work[#work + 1] = {id = real, step = index}
+                    work[#work + 1] = {id = real, step = index, optional = only[real] or only[id] or nil}
                 end
             end
         end
@@ -92,7 +111,7 @@ local function GuideQuests(rxp, guide, player)
     for _, item in ipairs(work) do
         if not accepted[item.id] and not stepOf[item.id] then
             stepOf[item.id] = item.step
-            order[#order + 1] = {id = item.id, step = item.step, kind = "handin"}
+            order[#order + 1] = {id = item.id, step = item.step, kind = "handin", optional = item.optional}
         end
     end
     table.sort(order, function(a, b)
@@ -414,11 +433,18 @@ function ns.PrereqData(rxp)
             unknown(id, item.step, "guide")
         elseif not IsDone(id) and not IsInLog(id, player) and IsForMe(db, player, id) then
             local chain = Chain(db, player, covered, id)
-            -- A quest the guide only hands in has to be picked up elsewhere too: it ends its own chain.
-            if item.kind == "handin" then chain[#chain + 1] = id end
+            -- A quest the guide only hands in has to be picked up elsewhere too: it ends its own chain. Not when
+            -- the quests before it are all the guide's own: then the game hands it out when the one before is
+            -- turned in (like The Missing Diplomat 1267 after 1324), and the guide has no line to pick it up.
+            if item.kind == "handin" then
+                local needs = Requirements(db, player, covered, id)
+                local viaGuide = #chain == 0 and #needs > 0
+                for _, pre in ipairs(needs) do viaGuide = viaGuide and covered[pre] or false end
+                if not viaGuide then chain[#chain + 1] = id end
+            end
             if #chain > 0 then
                 local entry = QuestInfo(db, player, covered, id)
-                entry.step, entry.kind = item.step, item.kind
+                entry.step, entry.kind, entry.optional = item.step, item.kind, item.optional
                 entry.after = FollowingQuests(db, player, id)
                 entry.chain = {}
                 for i, pre in ipairs(chain) do
@@ -463,6 +489,42 @@ function ns.QuestHint(id)
         info.before[i] = QuestValue(db, pre, "name") or ("Quest " .. pre)
     end
     return info
+end
+
+-- The first step of the guide with each of its quests (accepted, worked on or handed in), by quest ID.
+local stepsCache = {}
+local function GuideSteps(rxp, guide)
+    if stepsCache.guide == guide then return stepsCache.steps end
+    local steps = {}
+    for index, step in ipairs(guide.steps or {}) do
+        for _, element in ipairs(step.elements or {}) do
+            local id, tag = element.questId, element.tag
+            if type(id) == "number" and id > 0 and (tag == "accept" or tag == "turnin" or tag == "complete") then
+                local real = rxp.GetQuestId and rxp.GetQuestId(id, nil, true) or id
+                steps[id] = steps[id] or index
+                steps[real] = steps[real] or index
+            end
+        end
+    end
+    stepsCache.guide, stepsCache.steps = guide, steps
+    return steps
+end
+
+-- For the tracker's info button next to a step's title: the quests after this one in its chain,
+-- {{id, name, level, xp, status = "done" / "log" / nil, step = the current guide's first step with it}, ...},
+-- and the quest's own name; nil without Questie or for a quest Questie does not know.
+function ns.QuestFollowUps(id)
+    local db, player = Questie("QuestieDB"), Questie("QuestiePlayer")
+    if not (db and db.QueryQuestSingle and type(id) == "number" and id > 0 and IsKnown(db, id)) then return end
+    local list = FollowingQuests(db, player, id)
+    local rxp = _G.RXP
+    local guide = type(rxp) == "table" and rxp.currentGuide
+    local steps = type(guide) == "table" and guide.steps and GuideSteps(rxp, guide) or {}
+    for _, info in ipairs(list) do
+        info.status = IsDone(info.id) and "done" or IsInLog(info.id, player) and "log" or nil
+        info.step = steps[info.id]
+    end
+    return list, QuestValue(db, id, "name") or ("Quest " .. id)
 end
 
 --------------------------------------------------------------------------------------------------
@@ -1074,6 +1136,9 @@ local function ShowDetail()
     local intro
     if entry.kind == "handin" then
         intro = ("The guide works on or hands in this quest in step %d, but you do not have it, and this guide does not pick it up."):format(entry.step)
+        if entry.optional then
+            intro = intro .. " That step is only for players who already have the quest: without it, RestedXP skips the step on purpose."
+        end
         if entry.level then intro = intro .. (" It is a level %d quest."):format(entry.level) end
         local before = #entry.chain - 1
         if before > 0 then
@@ -1286,7 +1351,7 @@ local function Refresh()
             meta = ("Step %d"):format(entry.step)
             if entry.level then meta = ("Level %d  -  "):format(entry.level) .. meta end
             if entry.kind == "handin" then
-                meta = meta .. "  -  not picked up"
+                meta = meta .. (entry.optional and "  -  optional" or "  -  not picked up")
             else
                 meta = meta .. ("  -  %d missing"):format(#entry.chain)
             end
