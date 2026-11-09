@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.1.1
+
+- Hovering a red quest line (a quest you do not have) now says which quest it is, where it starts and which quests have to be done first, or that you can pick it up now; clicking the line opens Missing Prerequisites at that quest.
+
 ## v1.1.0
 
 The same as v1.0.16, which went out a few minutes earlier under the old numbering; the new window starts version 1.1.

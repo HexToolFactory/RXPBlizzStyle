@@ -449,11 +449,28 @@ function ns.PrereqData(rxp)
     return result
 end
 
+-- For the tracker's tooltip on a quest line of a quest the player does not have: the quest's info (name, starter,
+-- zone, status, ...) with before = {names of the quests to do first, earliest first}; nil without Questie.
+function ns.QuestHint(id)
+    local db, player = Questie("QuestieDB"), Questie("QuestiePlayer")
+    if not (db and db.QueryQuestSingle and type(id) == "number" and id > 0 and IsKnown(db, id)) then return end
+    local rxp = _G.RXP
+    local guide = type(rxp) == "table" and rxp.currentGuide
+    local covered = type(guide) == "table" and guide.steps and GuideQuests(rxp, guide, player) or {}
+    local info = QuestInfo(db, player, covered, id)
+    info.before = {}
+    for i, pre in ipairs(Chain(db, player, covered, id)) do
+        info.before[i] = QuestValue(db, pre, "name") or ("Quest " .. pre)
+    end
+    return info
+end
+
 --------------------------------------------------------------------------------------------------
 -- Window
 
 local frame, listRows, chainRows = nil, {}, {}
 local data, selected
+local focusQuest    -- a quest to select at the next refresh (ns.ShowPrereqsFor)
 
 local function SetBackdrop(f, bg, border, edge, inset)
     f:SetBackdrop({
@@ -1228,6 +1245,18 @@ local function Refresh()
     for _, entry in ipairs(quests) do display[#display + 1] = {kind = "quest", entry = entry} end
     for _, entry in ipairs(data and data.unknown or {}) do display[#display + 1] = {kind = "unknown", entry = entry} end
     if data then data.display = display end
+    if focusQuest then
+        -- The entry for that quest, or the one whose chain has it.
+        for index, item in ipairs(display) do
+            local found = item.entry.id == focusQuest
+            for _, info in ipairs(item.entry.chain or {}) do found = found or info.id == focusQuest end
+            if found then
+                selected = index
+                break
+            end
+        end
+        focusQuest = nil
+    end
     if not display[selected] then selected = display[1] and 1 or nil end
     local count = data and (#quests == 1 and "1 quest you cannot pick up" or (#quests .. " quests you cannot pick up")) or ""
     if data and #data.unknown > 0 then count = count .. (", %d unknown"):format(#data.unknown) end
@@ -1428,4 +1457,17 @@ end
 function ns.TogglePrereqs()
     if not frame then CreateWindow() end
     frame:SetShown(not frame:IsShown())
+end
+
+-- Opens the window at the entry of a quest (a click on a quest line of a quest the player does not have).
+function ns.ShowPrereqsFor(id)
+    if not frame then CreateWindow() end
+    focusQuest = id
+    if frame:IsShown() then Refresh() else frame:Show() end
+    focusQuest = nil
+    if selected then
+        local scroll = frame.List
+        local range = scroll:GetVerticalScrollRange() or 0
+        scroll:SetVerticalScroll(math.max(0, math.min(range, (selected - 1) * (ROW_HEIGHT + ROW_GAP))))
+    end
 end

@@ -78,6 +78,11 @@ local function Row_OnClick(row, button)
     if not rxp then return end
     if button == "RightButton" then
         ShowStepMenu(rxp, row.index)
+    elseif row.missing and not IsShiftKeyDown() and ns.ShowPrereqsFor then
+        -- Row_OnClick is defined above RowQuestId; read the ID the same way here.
+        local id = row.quest and row.quest.questId
+        if id and rxp.GetQuestId then id = rxp.GetQuestId(id, nil, true) or id end
+        if id then ns.ShowPrereqsFor(id) end
     elseif IsShiftKeyDown() then
         if row.upcoming then
             if row.index then rxp.SetStep(row.index) end
@@ -196,6 +201,37 @@ local function ShowQuestieTooltip(row, element)
     return true
 end
 
+-- The real quest ID of a line's quest (RestedXP maps some IDs to the variant of the character's race or class).
+local function RowQuestId(row)
+    local id = row.quest and row.quest.questId
+    local rxp = ns.GetRXP()
+    if id and rxp and rxp.GetQuestId then id = rxp.GetQuestId(id, nil, true) or id end
+    return id
+end
+
+-- For a quest the player does not have: which one it is, where it starts and what has to be done first.
+local function AddMissingLines(row)
+    GameTooltip:AddLine("You do not have this quest.", 1, 0.1, 0.1)
+    local id = RowQuestId(row)
+    local ok, hint = false, nil
+    if id and ns.QuestHint then ok, hint = pcall(ns.QuestHint, id) end
+    if not ok or type(hint) ~= "table" then return end
+    GameTooltip:AddLine(hint.name .. (hint.level and (" (level " .. hint.level .. ")") or ""), 1, 0.82, 0)
+    if hint.starter then
+        GameTooltip:AddLine("Starts at " .. hint.starter .. (hint.zone and (", " .. hint.zone) or ""), 1, 1, 1, true)
+    end
+    if #hint.before > 0 then
+        GameTooltip:AddLine(("Do these first (%d):"):format(#hint.before), 1, 0.5, 0.25)
+        for i = 1, math.min(#hint.before, 6) do GameTooltip:AddLine(i .. ". " .. hint.before[i], 0.9, 0.9, 0.9) end
+        if #hint.before > 6 then GameTooltip:AddLine(("... and %d more"):format(#hint.before - 6), 0.9, 0.9, 0.9) end
+    elseif hint.status == "level" then
+        GameTooltip:AddLine(("Needs level %d to pick it up."):format(hint.requiredLevel), 1, 0.5, 0.25)
+    elseif hint.status == "available" then
+        GameTooltip:AddLine("You can pick it up now.", 0.25, 1, 0.25)
+    end
+    if ns.ShowPrereqsFor then GameTooltip:AddLine("Click: show it in Missing Prerequisites", 0.5, 0.8, 1) end
+end
+
 local function Row_OnEnter(row)
     SetHoveredBlock(row.block)
     local tooltip = row.element and row.element.tooltip
@@ -203,12 +239,12 @@ local function Row_OnEnter(row)
     if ShowQuestieTooltip(row, row.quest) then
         if tooltip or row.missing then GameTooltip:AddLine(" ") end
         if tooltip then GameTooltip:AddLine(tooltip, 1, 1, 1, true) end
-        if row.missing then GameTooltip:AddLine("You do not have this quest.", 1, 0.1, 0.1) end
+        if row.missing then AddMissingLines(row) end
         GameTooltip:Show()
     elseif tooltip or row.missing then
         GameTooltip:SetOwner(row, "ANCHOR_LEFT")
         if tooltip then GameTooltip:AddLine(tooltip, 1, 1, 1, true) end
-        if row.missing then GameTooltip:AddLine("You do not have this quest.", 1, 0.1, 0.1) end
+        if row.missing then AddMissingLines(row) end
         GameTooltip:Show()
     end
 end
