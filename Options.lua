@@ -26,6 +26,14 @@ local OPTIONS = {
         name = "Questie tooltips on quest lines",
         tooltip = "With Questie: hovering a line that picks up, works on or hands in a quest shows the tooltip of that quest's pin on the map. Hold Shift for experience, money and the rest of the quest chain. Questie has it only for quests it marks on the map.",
     }, {
+        key = "prereqPrompt",
+        name = "Ask about missing prerequisites",
+        tooltip = "When you pick a guide that has quests you cannot pick up yet (Missing Prerequisites), asks whether you want to review them. Not when the game loads or reloads the guide you already had. Needs Questie.",
+    }, {
+        key = "holdMissing",
+        name = "Keep steps with missing prerequisites",
+        tooltip = "RestedXP skips a step on its own when its quest is not in your quest log or a quest before it is not done (\"Step skipped: Missing pre-requisites\"). With this on, the step stays, with a red line saying what is missing: click the line to see the quest in Missing Prerequisites, tick it off to skip the step.",
+    }, {
         key = "upcoming",
         name = "Upcoming steps",
         tooltip = "How many of the next steps are listed below the current step. Scroll over the list to look further ahead.",

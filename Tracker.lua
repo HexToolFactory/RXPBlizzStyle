@@ -67,8 +67,22 @@ local function ShowStepMenu(rxp, index)
     rxp:ShowMenu(menu, RXPFrame.MenuFrame, "cursor", 0, 0, "MENU")
 end
 
+-- Steps RestedXP would skip for a missing prerequisite (see "Steps with missing prerequisites" below).
+local held = setmetatable({}, {__mode = "k"})       -- step -> {frame, tag, id, name, kind = "log" / "done", marker}
+local released = setmetatable({}, {__mode = "k"})   -- step -> true: ticked off, RestedXP may skip it
+
+-- Ticking off the red line of a held step: RestedXP skips it as it would have.
+local function ReleaseStep(rxp, step)
+    local hold = held[step]
+    released[step] = true
+    held[step] = nil
+    if hold and rxp.functions and rxp.functions[hold.tag] then pcall(rxp.functions[hold.tag], hold.frame, "RXPBlizzStyle") end
+    rxp.updateSteps = true
+end
+
 -- What ticking the checkbox next to a line does in RestedXP's window.
 local function ToggleSkip(rxp, element)
+    if element.heldStep then return ReleaseStep(rxp, element.heldStep) end
     local skip = not element.skip
     if not element.optional then
         if element.OnComplete and skip then element.OnComplete(element) end
@@ -91,7 +105,9 @@ local function Row_OnClick(row, button)
         if id and rxp.GetQuestId then id = rxp.GetQuestId(id, nil, true) or id end
         if id then ns.ShowPrereqsFor(id) end
     elseif IsShiftKeyDown() then
-        if row.upcoming then
+        if row.past and row.index and ns.GoBackTo then
+            ns.GoBackTo(rxp, row.index)
+        elseif row.upcoming then
             if row.index then rxp.SetStep(row.index) end
         elseif row.element and row.state ~= "note" then
             ToggleSkip(rxp, row.element)
@@ -112,7 +128,10 @@ end
 
 local function ColorRow(row)
     local hover = row.block == hoveredBlock
-    if row.kind == "title" then
+    if row.past then
+        row.Text:SetTextColor(TrackerColor(row.kind == "title" and hover and "titleHover" or "done"))
+        row.Dash:SetTextColor(TrackerColor("done"))
+    elseif row.kind == "title" then
         row.Text:SetTextColor(TrackerColor(hover and "titleHover" or "title"))
     elseif row.state == "done" then
         row.Text:SetTextColor(TrackerColor("done"))
@@ -218,7 +237,9 @@ end
 
 -- For a quest the player does not have: which one it is, where it starts and what has to be done first.
 local function AddMissingLines(row)
-    GameTooltip:AddLine("You do not have this quest.", 1, 0.1, 0.1)
+    local marker = row.element and row.element.heldStep and row.element
+    GameTooltip:AddLine(marker and marker.headline or "You do not have this quest.", 1, 0.1, 0.1, true)
+    if marker then GameTooltip:AddLine("Tick it off (the dash) to skip the step.", 0.5, 0.8, 1) end
     local id = RowQuestId(row)
     local ok, hint = false, nil
     if id and ns.QuestHint then ok, hint = pcall(ns.QuestHint, id) end
@@ -285,6 +306,17 @@ end
 local function PreviousStep(guide, from)
     local level = UnitLevel("player")
     for index = from - 1, 1, -1 do
+        local step = guide.steps[index]
+        if not (step.sticky or step.hidewindow or step.hidetip or step.optional or
+            (step.level and step.level > level)) then
+            return index
+        end
+    end
+end
+
+local function NextStep(guide, from)
+    local level = UnitLevel("player")
+    for index = from + 1, #guide.steps do
         local step = guide.steps[index]
         if not (step.sticky or step.hidewindow or step.hidetip or step.optional or
             (step.level and step.level > level)) then
@@ -367,6 +399,8 @@ local function UpdateHold(rxp, guide)
     if not guide then return end
     local id = GuideId(guide)
     local current = rxp.GetGuideProgress()
+    local pin = ns.db.pin
+    if pin and (guide.empty or id ~= pin.guide or current ~= pin.step) then ns.db.pin = nil end
 
     if backCursor and backCursor.watching then
         if id ~= backCursor.id or current > backCursor.step then
@@ -388,10 +422,50 @@ local function UpdateHold(rxp, guide)
     ns.Print("RestedXP skips steps on its own again.")
 end
 
+-- A step gone back to on purpose stays the current step even when it is done, until the player goes on (see
+-- "Going back" at the end). ns.db.pin = {guide = id, step, origin = {group, name, step} where the walk started}.
+local function Pin(rxp, guide, step, origin)
+    local first = ns.db.pin and ns.db.pin.origin or origin
+    ns.db.pin = {guide = GuideId(guide), step = step, origin = first}
+end
+
+-- The return arrow: back to the step the walk back started from.
+function ns.ReturnFromBack(rxp)
+    local pin = ns.db.pin
+    ns.db.pin = nil
+    backCursor = nil
+    local origin = pin and pin.origin
+    if not origin then return end
+    local guide = rxp.currentGuide
+    if not guide or guide.group ~= origin.group or guide.name ~= origin.name then
+        local target = rxp.GetGuideTable(origin.group, origin.name)
+        if not target then return end
+        rxp:LoadGuide(target)
+    end
+    rxp.SetStep(origin.step)
+end
+
+-- Shift-click on a previous step (scrolled back in the list): goes there like the back arrow, so RestedXP does
+-- not skip straight on from it.
+function ns.GoBackTo(rxp, index)
+    local guide = rxp.currentGuide
+    if not guide or guide.empty then return end
+    local origin = rxp.GetGuideProgress()
+    if index < origin then
+        HoldSkips(rxp, guide, origin)
+        backCursor = {id = GuideId(guide), group = guide.group, name = guide.name, step = index, at = GetTime(), watching = true}
+        Pin(rxp, guide, index, {group = guide.group, name = guide.name, step = origin})
+    else
+        ns.db.pin = nil
+    end
+    rxp.SetStep(index)
+end
+
 local function StepBack(rxp)
     local guide = rxp.currentGuide
     local origin = rxp.GetGuideProgress()
     local from = origin
+    local start = {group = guide.group, name = guide.name, step = origin}
 
     if WalkingBack() then
         if backCursor.id == GuideId(guide) then
@@ -425,6 +499,7 @@ local function StepBack(rxp)
 
     HoldSkips(rxp, guide, origin)
     backCursor = {id = GuideId(guide), group = guide.group, name = guide.name, step = target, at = GetTime(), watching = true}
+    Pin(rxp, guide, target, start)
     rxp.SetStep(target)
 end
 
@@ -437,7 +512,17 @@ local function StepButton_OnClick(button)
         StepBack(rxp)
     else
         backCursor = nil
-        rxp.SetStep(rxp.GetGuideProgress() + 1)
+        local pin = ns.db.pin
+        local origin = pin and pin.origin
+        local current = rxp.GetGuideProgress()
+        local nextStep = NextStep(guide, current)
+        if origin and nextStep and guide.group == origin.group and guide.name == origin.name and nextStep < origin.step then
+            Pin(rxp, guide, nextStep, origin)
+            rxp.SetStep(nextStep)
+        else
+            ns.db.pin = nil
+            rxp.SetStep(current + 1)
+        end
     end
     ns.Refresh()
 end
@@ -448,7 +533,7 @@ local function StepButton_OnEnter(button)
     if button.direction < 0 then
         GameTooltip:AddLine("Also stops RestedXP from skipping steps on its own until you are back where you started.",
             0.8, 0.8, 0.8, true)
-        GameTooltip:AddLine("A step that is already done jumps forward again: keep clicking to go back past it.",
+        GameTooltip:AddLine("The step you go back to stays, even when it is done: the next arrow then walks forward step by step, the round arrow returns at once.",
             0.8, 0.8, 0.8, true)
         GameTooltip:AddLine("On the first step it goes on in the guide that comes before this one.", 0.8, 0.8, 0.8, true)
     end
@@ -476,7 +561,8 @@ local function Header_OnEnter(header)
     GameTooltip:AddLine("Right-click: guides and RestedXP options", 0.8, 0.8, 0.8)
     GameTooltip:AddLine("Right-click a step: step menu", 0.8, 0.8, 0.8)
     GameTooltip:AddLine("Click the dash in front of a line: tick it off", 0.8, 0.8, 0.8)
-    GameTooltip:AddLine("Shift-click an upcoming step: jump to it", 0.8, 0.8, 0.8)
+    GameTooltip:AddLine("Shift-click an upcoming or previous step: go to it", 0.8, 0.8, 0.8)
+    GameTooltip:AddLine("Scroll over the steps below: look ahead, or back at the previous steps", 0.8, 0.8, 0.8)
     GameTooltip:AddLine("Arrows: previous / next step", 0.8, 0.8, 0.8)
     if not ns.db.attach then GameTooltip:AddLine("Drag: move", 0.8, 0.8, 0.8) end
     GameTooltip:Show()
@@ -900,20 +986,64 @@ local function Build()
         GameTooltip:Show()
     end)
     activeHeader.Prereqs:SetScript("OnLeave", GameTooltip_Hide)
+    activeHeader.Return = CreateFrame("Button", nil, activeHeader)
+    activeHeader.Return:SetSize(14, 14)
+    activeHeader.Return:SetPoint("RIGHT", activeHeader.Prereqs, "LEFT", -3, 0)
+    activeHeader.Return:SetNormalTexture("Interface\\Buttons\\UI-RefreshButton")
+    activeHeader.Return:SetHighlightTexture("Interface\\Buttons\\UI-RefreshButton", "ADD")
+    activeHeader.Return:SetScript("OnClick", function()
+        local rxp = ns.GetRXP()
+        if not rxp then return end
+        PlaySound(SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_ON)
+        ns.ReturnFromBack(rxp)
+        ns.Refresh()
+    end)
+    activeHeader.Return:SetScript("OnEnter", function(self)
+        local origin = ns.db.pin and ns.db.pin.origin
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        GameTooltip:AddLine(origin and ("Back to step %d"):format(origin.step) or "Back", 1, 1, 1)
+        GameTooltip:AddLine("Where you were before going back.", 0.8, 0.8, 0.8)
+        GameTooltip:Show()
+    end)
+    activeHeader.Return:SetScript("OnLeave", GameTooltip_Hide)
+    activeHeader.Return:Hide()
     activeHeader.Text:SetWidth(Width() - 132)
     upcomingHeader = CreateHeader("upcomingCollapsed")
     upcomingHeader.Text:SetText("Upcoming Steps")
 
-    -- The mouse wheel over the upcoming steps pages through the rest of the guide.
-    wheelArea = CreateFrame("Frame", nil, root)
-    wheelArea:EnableMouseWheel(true)
-    wheelArea:SetScript("OnMouseWheel", function(_, delta)
+    -- The mouse wheel over the upcoming steps (or their header) pages through the rest of the guide, and back past
+    -- the current step through the steps before it, like scrolling up in RestedXP's step list.
+    local function Wheel(_, delta)
         -- Anchor Bottom has the later steps above: the wheel goes up to them.
         if ns.db.anchor == "BOTTOM" then delta = -delta end
-        if delta < 0 and not listIsFull then return end
-        scrollOffset = math.max(0, scrollOffset - delta)
+        if delta < 0 and scrollOffset >= 0 and not listIsFull then return end
+        scrollOffset = scrollOffset - delta
+        ns.Refresh()
+    end
+    wheelArea = CreateFrame("Frame", nil, root)
+    wheelArea:EnableMouseWheel(true)
+    wheelArea:SetScript("OnMouseWheel", Wheel)
+    upcomingHeader:EnableMouseWheel(true)
+    upcomingHeader:SetScript("OnMouseWheel", Wheel)
+    -- Shown while scrolled away: back to the steps right after the current one.
+    local back = CreateFrame("Button", nil, upcomingHeader)
+    back:SetSize(14, 14)
+    back:SetPoint("RIGHT", upcomingHeader.Collapse, "LEFT", -3, 0)
+    back:SetNormalTexture("Interface\\Buttons\\UI-RefreshButton")
+    back:SetHighlightTexture("Interface\\Buttons\\UI-RefreshButton", "ADD")
+    back:SetScript("OnClick", function()
+        scrollOffset = 0
+        PlaySound(SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_ON)
         ns.Refresh()
     end)
+    back:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        GameTooltip:AddLine("Back to the current step", 1, 1, 1)
+        GameTooltip:Show()
+    end)
+    back:SetScript("OnLeave", GameTooltip_Hide)
+    back:Hide()
+    upcomingHeader.Return = back
 
     -- The free end of the guide's box (option "Limit the guide's height"): a line across the guide that is dragged
     -- up and down to set its height. It only shows while the mouse is on the guide.
@@ -1122,6 +1252,20 @@ local function ActiveBlocks(rxp, signature)
                     AddToSignature(signature, state, icon, text, missing, shop and shop.id, shop and shop.qty)
                 end
             end
+            local pin = ns.db.pin
+            if pin and pin.step == step.index and pin.guide == GuideId(guide) and pin.origin then
+                local text = ("You went back to this step: RestedXP stays here until you go on (the arrows above, or the round one to return to step %d)."):format(pin.origin.step)
+                block.lines[#block.lines + 1] = {text = text, state = "note"}
+                AddToSignature(signature, "pin", text)
+            end
+            local hold = held[step]
+            if hold then
+                local text = (hold.kind == "log" and "Missing prerequisite: %s is not in your quest log" or
+                    "Missing prerequisite: %s is not done"):format(hold.name)
+                block.lines[#block.lines + 1] = {text = text, state = "todo", element = hold.marker, missing = true,
+                    quest = {questId = hold.id}}
+                AddToSignature(signature, "held", text)
+            end
             if block.title or #block.lines > 0 then blocks[#blocks + 1] = block end
         end
     end
@@ -1162,6 +1306,55 @@ local function UpcomingLines(rxp, guide, step, index, current)
     return lines
 end
 
+-- Scrolled back past the next steps: the steps before the current one, in guide order. scrollOffset -1 ends the
+-- page at the step right before the current one, each further tick goes one step back. nil when there are none.
+local function PreviousBlocks(rxp, guide, signature, current, count)
+    local skipped = RXPCData and RXPCData.stepSkip or {}
+    local back = -scrollOffset
+    local found = {}
+    for index = current - 1, math.max(1, current - MAX_UPCOMING_SCAN), -1 do
+        local step = guide.steps[index]
+        if step and not (step.hidewindow or step.hidetip or step.optional) then
+            local lines = UpcomingLines(rxp, guide, step, index, current)
+            if lines then
+                found[#found + 1] = {index = index, step = step, lines = lines}
+                if #found >= back + count - 1 then break end
+            end
+        end
+    end
+    if #found == 0 then
+        scrollOffset = 0
+        return nil
+    end
+    local last = math.max(1, #found - count + 1)
+    if back > last then
+        back = last
+        scrollOffset = -back
+    end
+    local blocks = {}
+    for i = math.min(#found, back + count - 1), back, -1 do
+        local item = found[i]
+        for _, line in ipairs(item.lines) do
+            line.missing = false
+            -- Done, unless the player skipped the step.
+            if line.state == "todo" and not skipped[item.index] then line.state = "done" end
+        end
+        local title = item.step.title and item.step.title ~= "" and GuideText(rxp, item.step.title) or
+                          rxp.locale.Get("Step %d"):format(item.index)
+        local quests = StepQuests(rxp, item.step)
+        local follow = FollowQuests(quests)
+        blocks[#blocks + 1] = {index = item.index, title = title, lines = item.lines, upcoming = true, past = true,
+            quests = quests, follow = follow}
+        AddToSignature(signature, "previous", item.index, title, #follow)
+        for _, line in ipairs(item.lines) do AddToSignature(signature, line.text, line.state) end
+    end
+    -- Anchor Bottom lays the list out from the bottom up: reversed, it still reads in guide order.
+    if ns.db.anchor == "BOTTOM" then
+        for i = 1, math.floor(#blocks / 2) do blocks[i], blocks[#blocks + 1 - i] = blocks[#blocks + 1 - i], blocks[i] end
+    end
+    return blocks
+end
+
 local function UpcomingBlocks(rxp, guide, signature)
     local blocks = {}
     local count = UpcomingCount()
@@ -1169,6 +1362,10 @@ local function UpcomingBlocks(rxp, guide, signature)
 
     local current = rxp.GetGuideProgress()
     if scrollStep ~= current then scrollStep, scrollOffset = current, 0 end
+    if scrollOffset < 0 then
+        local previous = PreviousBlocks(rxp, guide, signature, current, count)
+        if previous then return previous end
+    end
 
     local level = UnitLevel("player")
     local skipped = RXPCData and RXPCData.stepSkip or {}
@@ -1217,6 +1414,7 @@ local function PlaceRow(kind, line, block, y)
     end
 
     row.kind, row.block, row.index, row.upcoming = kind, nextBlock, block.index, block.upcoming
+    row.past = block.past
     row.state = kind == "line" and line.state or nil
     row.element = kind == "line" and line.element or nil
     row.missing = kind == "line" and line.missing or false
@@ -1349,10 +1547,15 @@ end
 local function Draw(title, tooltipTitle, active, upcoming, floor)
     usedRows, nextBlock = 0, 0
     drawFloor = floor
+    upcomingHeader.Text:SetText(scrollOffset < 0 and "Previous Steps" or "Upcoming Steps")
+    upcomingHeader.Return:SetShown(scrollOffset ~= 0)
 
     activeHeader.Text:SetText(title)
     activeHeader.Next:SetShown(tooltipTitle ~= nil)
     activeHeader.Previous:SetShown(tooltipTitle ~= nil)
+    local pinned = ns.db.pin ~= nil and tooltipTitle ~= nil
+    activeHeader.Return:SetShown(pinned)
+    activeHeader.Text:SetWidth(Width() - 132 - (pinned and 17 or 0))
     activeHeader.tooltipTitle = tooltipTitle
     SetCollapseButton(activeHeader.Collapse, ns.db.activeCollapsed)
 
@@ -1817,3 +2020,139 @@ local function Update(rxp)
 end
 
 ns.RegisterPart("quest tracker style", Update, Disable)
+
+--------------------------------------------------------------------------------------------------
+-- Going back. A step that is already done is ticked off again by RestedXP the moment it becomes the current step,
+-- and RestedXP goes on at once (UpdateStepCompletion sets loadNextStep). For the step the player went back to on
+-- purpose (ns.db.pin, see Pin) that is held back, so the step stays until the player goes on.
+
+local completion
+ns.RegisterPart("going back", function(rxp)
+    if completion then return end
+    assert(type(rxp.UpdateStepCompletion) == "function", "RestedXP has no UpdateStepCompletion")
+    local original = rxp.UpdateStepCompletion
+    local function wrapper(...)
+        local result = original(...)
+        local pin = ns.db.pin
+        local guide = rxp.currentGuide
+        if pin and rxp.loadNextStep and type(guide) == "table" and not guide.empty and GuideId(guide) == pin.guide
+            and rxp.GetGuideProgress() == pin.step then
+            rxp.loadNextStep = false
+        end
+        return result
+    end
+    completion = {original = original, wrapper = wrapper}
+    rxp.UpdateStepCompletion = wrapper
+end, function()
+    local rxp = ns.GetRXP()
+    if rxp and completion and rxp.UpdateStepCompletion == completion.wrapper then
+        rxp.UpdateStepCompletion = completion.original
+    end
+    ns.db.pin = nil
+end)
+
+--------------------------------------------------------------------------------------------------
+-- Steps with missing prerequisites. RestedXP skips a step on its own when its quest is not in the quest log
+-- (.isOnQuest) or a quest before it is not done (.isQuestTurnedIn): "Step skipped: Missing pre-requisites". With
+-- holdMissing such a step stays, with a red line naming the missing quest, until the player ticks that line off or
+-- the condition is met. Not for quests already turned in or meant for another race or class: those are skipped.
+
+local HOLD_TAGS = {isOnQuest = "log", isQuestTurnedIn = "done"}
+local originals = {}
+
+local function QuestTitle(id)
+    local name = C_QuestLog and C_QuestLog.GetTitleForQuestID and C_QuestLog.GetTitleForQuestID(id)
+    if not name and ns.QuestHint then
+        local ok, hint = pcall(ns.QuestHint, id)
+        name = ok and type(hint) == "table" and hint.name or nil
+    end
+    return name or ("Quest " .. id)
+end
+
+-- The quest whose absence made RestedXP skip the step, when the step is worth keeping for it.
+local function MissingQuest(rxp, kind, element)
+    for _, raw in pairs(element.questIds or {}) do
+        local id = tonumber(raw)
+        id = id and rxp.GetQuestId and rxp.GetQuestId(id, nil, true) or id
+        if id and not rxp.IsQuestTurnedIn(id) and not (kind == "log" and rxp.IsOnQuest(id))
+            and (not ns.QuestForMe or ns.QuestForMe(id)) then
+            return id
+        end
+    end
+end
+
+local function Checked(rxp, tag, frame, event, ...)
+    local element = frame.element
+    local step = element.step
+    local before = step and step.completed
+    local result = originals[tag](frame, event, ...)
+    if not (step and step.active) or element.reverse then return result end
+    if before or not step.completed then
+        -- Not skipped by this call: a hold of this element ends once its condition is met.
+        if not step.completed and held[step] and held[step].frame == frame and event ~= "WindowUpdate" then
+            held[step] = nil
+        end
+        return result
+    end
+    if not ns.db.holdMissing or released[step] then return result end
+    local id = MissingQuest(rxp, HOLD_TAGS[tag], element)
+    if not id then return result end
+    step.completed = false
+    element.tooltipText = nil
+    local hold = held[step]
+    if not (hold and hold.frame == frame and hold.id == id) then
+        local kind = HOLD_TAGS[tag]
+        hold = {frame = frame, tag = tag, id = id, kind = kind, name = QuestTitle(id)}
+        hold.marker = {heldStep = step, headline = kind == "log" and
+            "RestedXP would skip this step: this quest is not in your quest log." or
+            "RestedXP would skip this step: this quest is not done."}
+        held[step] = hold
+    end
+    return result
+end
+
+-- Element frames keep the function they were bound with: point the active ones at the current one.
+local function Rebind(from, to)
+    for _, step in ipairs(RXPFrame and RXPFrame.activeSteps or {}) do
+        for _, element in ipairs(step.elements or {}) do
+            local frame = element.frame
+            if frame and frame.element == element and HOLD_TAGS[element.tag] and frame.callback == from[element.tag] then
+                frame.callback = to[element.tag]
+            end
+        end
+    end
+end
+
+local wrappers
+ns.RegisterPart("missing prerequisite steps", function(rxp)
+    if not wrappers then
+        local functions = rxp.functions
+        assert(type(functions) == "table" and type(rxp.IsOnQuest) == "function" and type(rxp.IsQuestTurnedIn) == "function",
+            "RestedXP's quest checks are missing")
+        local made = {}
+        for tag in pairs(HOLD_TAGS) do
+            assert(type(functions[tag]) == "function", "RestedXP has no " .. tag)
+            originals[tag] = functions[tag]
+            made[tag] = function(self, text, ...)
+                if type(self) ~= "table" or type(self.element) ~= "table" then return originals[tag](self, text, ...) end
+                return Checked(rxp, tag, self, text, ...)
+            end
+        end
+        for tag, wrapper in pairs(made) do functions[tag] = wrapper end
+        wrappers = made
+        Rebind(originals, wrappers)
+        rxp.updateSteps = true
+    end
+    -- Switched off: let RestedXP skip what is held.
+    if not ns.db.holdMissing and next(held) then
+        for step in pairs(held) do ReleaseStep(rxp, step) end
+    end
+end, function()
+    local rxp = ns.GetRXP()
+    if not (rxp and wrappers) then return end
+    for tag, original in pairs(originals) do
+        if rxp.functions[tag] == wrappers[tag] then rxp.functions[tag] = original end
+    end
+    Rebind(wrappers, originals)
+    for step in pairs(held) do held[step] = nil end
+end)
