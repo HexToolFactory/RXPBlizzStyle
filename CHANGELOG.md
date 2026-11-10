@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.3.0
+
+- Picking a guide that has missing prerequisites asks whether you want to review them (not when the game loads or reloads the guide you already had). Option "Ask about missing prerequisites".
+- Steps RestedXP skips on its own for a missing prerequisite ("Step skipped: Missing pre-requisites": the quest is not in your log, or a quest before it is not done) now stay in the guide with a red line naming the missing quest. Click the line to see it in Missing Prerequisites, tick it off to skip the step. Option "Keep steps with missing prerequisites".
+- Scrolling up over the upcoming steps (or their header) goes on past the current step to the previous steps, like scrolling up in RestedXP's step list. A small arrow on the header jumps back; Shift-click a previous step to go back to it.
+- Going back (back arrow or Shift-click on a previous step) now stays on that step even when it is done, instead of RestedXP jumping forward again at once. The next arrow walks forward step by step; a round arrow on the header returns to where you were.
+
 ## v1.2.0
 
 - New settings page Options > AddOns > RestedXP Blizzard Style > Display: Scale, Width, Height and Anchor (Top / Bottom). Attached, the guide stays below the quest tracker and moves with it in Edit Mode.

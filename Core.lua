@@ -18,6 +18,8 @@ ns.defaults = {
     upcoming = 3,         -- how many upcoming steps to list
     arrowText = true,     -- write the current step under the waypoint arrow
     tomtom = true,        -- hand the waypoint to TomTom's arrow when TomTom is loaded
+    prereqPrompt = true,  -- ask about missing prerequisites when a guide is picked
+    holdMissing = true,   -- keep steps RestedXP would skip for a missing prerequisite, until ticked off
     -- Display
     scale = 1,            -- on top of the quest tracker's own scale
     width = 260,

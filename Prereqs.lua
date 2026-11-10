@@ -1137,7 +1137,9 @@ local function ShowDetail()
     if entry.kind == "handin" then
         intro = ("The guide works on or hands in this quest in step %d, but you do not have it, and this guide does not pick it up."):format(entry.step)
         if entry.optional then
-            intro = intro .. " That step is only for players who already have the quest: without it, RestedXP skips the step on purpose."
+            intro = intro .. (ns.db.holdMissing
+                and " That step is only for players who already have the quest: the guide keeps it with a red line, tick that off to skip the step."
+                or " That step is only for players who already have the quest: without it, RestedXP skips the step on purpose.")
         end
         if entry.level then intro = intro .. (" It is a level %d quest."):format(entry.level) end
         local before = #entry.chain - 1
@@ -1536,3 +1538,111 @@ function ns.ShowPrereqsFor(id)
         scroll:SetVerticalScroll(math.max(0, math.min(range, (selected - 1) * (ROW_HEIGHT + ROW_GAP))))
     end
 end
+
+-- Whether a quest is for this character's race and class; true without Questie or for a quest it does not know.
+function ns.QuestForMe(id)
+    local db, player = Questie("QuestieDB"), Questie("QuestiePlayer")
+    if not (db and db.QueryQuestSingle and type(id) == "number" and IsKnown(db, id)) then return true end
+    return IsForMe(db, player, id) and true or false
+end
+
+--------------------------------------------------------------------------------------------------
+-- Picking a guide that has missing prerequisites asks whether to review them. Only a guide the player picks (or
+-- RestedXP moves on to): the one it restores after logging in or reloading is not asked about again, since the
+-- player may have decided to skip some of them.
+
+local PROMPT_GRACE = 10     -- seconds after loading in which the guide RestedXP restores does not count as picked
+local PROMPT_WAIT = 30      -- how long a picked guide waits for Questie and its steps before it is not asked about
+
+local prompt
+local loadedAt, knownGuide, pending
+
+local function GuideKey(guide)
+    if type(guide) ~= "table" or guide.empty then return "none" end
+    return guide.key or (tostring(guide.group) .. "\031" .. tostring(guide.name))
+end
+
+local function OpenWindow()
+    if not frame then CreateWindow() end
+    if frame:IsShown() then Refresh() else frame:Show() end
+end
+
+local function PromptButton(text, onClick)
+    local button = CreateFrame("Button", nil, prompt, "UIPanelButtonTemplate")
+    button:SetSize(120, 24)
+    button:SetText(text)
+    button:SetScript("OnClick", onClick)
+    return button
+end
+
+local function CreatePrompt()
+    prompt = CreateFrame("Frame", "RXPBlizzStylePrereqPrompt", UIParent, "BackdropTemplate")
+    prompt:SetWidth(360)
+    prompt:SetPoint("CENTER", 0, 160)
+    prompt:SetFrameStrata("DIALOG")
+    prompt:SetToplevel(true)
+    prompt:SetClampedToScreen(true)
+    prompt:EnableMouse(true)
+    SetBackdrop(prompt, "Interface\\FrameGeneral\\UI-Background-Rock", "Interface\\DialogFrame\\UI-DialogBox-Border", 24, 6)
+    prompt:SetBackdropColor(0.045, 0.042, 0.037, 0.99)
+    tinsert(UISpecialFrames, prompt:GetName())
+
+    prompt.Title = prompt:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    prompt.Title:SetPoint("TOP", 0, -20)
+    prompt.Title:SetText("Missing Prerequisites")
+    prompt.Title:SetTextColor(unpack(GOLD))
+    prompt.Text = prompt:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    prompt.Text:SetPoint("TOP", prompt.Title, "BOTTOM", 0, -12)
+    prompt.Text:SetWidth(310)
+    prompt.Text:SetSpacing(2)
+
+    local review = PromptButton("Review", function()
+        prompt:Hide()
+        OpenWindow()
+    end)
+    review:SetPoint("BOTTOMRIGHT", prompt, "BOTTOM", -6, 18)
+    local later = PromptButton("Not now", function() prompt:Hide() end)
+    later:SetPoint("BOTTOMLEFT", prompt, "BOTTOM", 6, 18)
+    prompt:Hide()
+end
+
+local function ShowPrompt(guideName, count)
+    if not prompt then CreatePrompt() end
+    prompt.Text:SetText(("|cffffd100%s|r\n\n%d quest%s in this guide cannot be picked up yet: quests before %s are not done, and the guide does not do them.\n\nDo you want to review them?")
+        :format(guideName or "This guide", count, count == 1 and "" or "s", count == 1 and "it" or "them"))
+    prompt:SetHeight(20 + prompt.Title:GetStringHeight() + 12 + prompt.Text:GetStringHeight() + 18 + 24 + 18)
+    prompt:Show()
+end
+
+ns.RegisterPart("missing prerequisites prompt", function(rxp)
+    local now = GetTime()
+    loadedAt = loadedAt or now
+    local guide = rxp.currentGuide
+    local key = GuideKey(guide)
+    if now - loadedAt < PROMPT_GRACE or not knownGuide then
+        knownGuide = key
+        return
+    end
+    if key ~= knownGuide then
+        knownGuide = key
+        pending = key ~= "none" and {key = key, since = now} or nil
+        if prompt then prompt:Hide() end
+    end
+    if not pending then return end
+    if not ns.db.prereqPrompt or now - pending.since > PROMPT_WAIT then
+        pending = nil
+        return
+    end
+    -- Not in the middle of a fight, and only once the guide's steps and Questie are there.
+    if InCombatLockdown() or not (type(guide.steps) == "table" and #guide.steps > 0) then return end
+    local result = ns.PrereqData(rxp)
+    if not result then return end
+    pending = nil
+    local count = 0
+    for _, entry in ipairs(result.quests) do
+        if not entry.optional then count = count + 1 end
+    end
+    if count > 0 and not (frame and frame:IsShown()) then ShowPrompt(result.guide, count) end
+end, function()
+    if prompt then prompt:Hide() end
+end)
