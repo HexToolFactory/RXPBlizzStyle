@@ -14,10 +14,30 @@ ns.defaults = {
     attach = true,        -- keep that display where the quest tracker's next section would be
     limit = true,         -- cut that display off at a line on the screen (RXPBlizzStyleDB.bottom)
     hideQuests = true,    -- hide Blizzard's quest tracker while a guide is shown
+    questie = true,       -- Questie's map pin tooltip when hovering a quest line
     upcoming = 3,         -- how many upcoming steps to list
     arrowText = true,     -- write the current step under the waypoint arrow
     tomtom = true,        -- hand the waypoint to TomTom's arrow when TomTom is loaded
+    -- Display
+    scale = 1,            -- on top of the quest tracker's own scale
+    width = 260,
+    height = 350,         -- how tall the guide may get while "limit" is on (the yellow line)
+    anchor = "TOP",       -- the edge that stays put: the guide grows down from its top, or up from its bottom
 }
+
+-- The ranges of the display settings, for the settings panel and for dragging the yellow line.
+ns.RANGES = {
+    scale = {0.5, 2, 0.05},
+    width = {200, 600, 5},
+    height = {100, 1200, 10},
+}
+
+function ns.Clamp(key, value)
+    local range = ns.RANGES[key]
+    value = tonumber(value) or ns.defaults[key]
+    value = math.min(math.max(value, range[1]), range[2])
+    return math.floor(value / range[3] + 0.5) * range[3]
+end
 
 local UPDATE_INTERVAL = 0.2
 
@@ -114,6 +134,19 @@ driver:SetScript("OnEvent", function(self, event, name)
 
     RXPBlizzStyleDB = RXPBlizzStyleDB or {}
     RXPBlizzStyleDB.collapseTainted = nil   -- left by a version that was never released
+    -- Up to 1.1 the yellow line was a fixed height on the screen (bottom); since 1.2 it is the guide's height.
+    local old = RXPBlizzStyleDB
+    if old.height == nil and type(old.bottom) == "number" then
+        local spot = old.attach ~= false and old.attachedAt or old.position
+        local top = type(spot) == "table" and tonumber(spot.top)
+        if top and top - old.bottom >= 100 then old.height = math.floor(math.min(top - old.bottom, 1200) / 10 + 0.5) * 10 end
+    end
+    -- A 1.2 test build had an Unlock option whose dragging detached the guide from the quest tracker. It is gone:
+    -- whoever had it gets the guide back under the tracker, once.
+    if old.unlock ~= nil then
+        old.unlock = nil
+        old.attach = true
+    end
     for key, value in pairs(ns.defaults) do
         if RXPBlizzStyleDB[key] == nil then RXPBlizzStyleDB[key] = value end
     end
@@ -306,8 +339,11 @@ end
 
 SLASH_RXPBLIZZSTYLE1 = "/rxpstyle"
 SlashCmdList.RXPBLIZZSTYLE = function(message)
-    if strtrim(message or ""):lower() == "report" then
+    local command = strtrim(message or ""):lower()
+    if command == "report" then
         ns.ShowReport()
+    elseif command == "prereqs" or command == "prerequisites" then
+        ns.TogglePrereqs()
     else
         ns.OpenOptions()
     end

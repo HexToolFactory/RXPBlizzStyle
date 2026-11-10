@@ -3,16 +3,23 @@ local addonName, ns = ...
 -- The guide drawn like a section of Blizzard's quest tracker: a header bar with the guide's name,
 -- the active steps as "quests" with their lines as objectives, and a second section with the
 -- upcoming steps. Measurements are those of Blizzard_ObjectiveTracker (module, block, line).
-local WIDTH = 260
+local DEFAULT_WIDTH = 260
 local HEADER_HEIGHT = 25
 local BLOCK_INDENT = 20
 local SHOP_SIZE = 14
+local INFO_SIZE = 12
+local INFO_TEXTURE = "Interface\\FriendsFrame\\InformationIcon"
 local BLOCK_GAP = 10
 local LINE_GAP = 4
 local MODULE_GAP = 10
 local MAX_UPCOMING_SCAN = 400
 local DEFAULT_WINDOW = 350
-local MIN_ROOM = 150   -- what the guide keeps below an open quest tracker, cut-off line or not
+local MIN_ROOM = 150   -- what the guide keeps when the screen edge is nearer than its height
+
+-- The display settings (Options > AddOns > RestedXP Blizzard Style > Display).
+local function Width() return ns.Clamp("width", ns.db.width) end
+local function UserScale() return ns.Clamp("scale", ns.db.scale) end
+local function Height() return ns.Clamp("height", ns.db.height) end
 
 local COLORS = {
     title = {"Header", 0.75, 0.61, 0},
@@ -78,6 +85,11 @@ local function Row_OnClick(row, button)
     if not rxp then return end
     if button == "RightButton" then
         ShowStepMenu(rxp, row.index)
+    elseif row.missing and not IsShiftKeyDown() and ns.ShowPrereqsFor then
+        -- Row_OnClick is defined above RowQuestId; read the ID the same way here.
+        local id = row.quest and row.quest.questId
+        if id and rxp.GetQuestId then id = rxp.GetQuestId(id, nil, true) or id end
+        if id then ns.ShowPrereqsFor(id) end
     elseif IsShiftKeyDown() then
         if row.upcoming then
             if row.index then rxp.SetStep(row.index) end
@@ -120,21 +132,152 @@ local function SetHoveredBlock(block)
     end
 end
 
+-- Questie's map pin tooltip on quest lines. Hovering a line that picks up, works on or hands in a quest
+-- shows what hovering that quest's pin on the map shows, Shift included (experience, money, the rest of
+-- the chain). Questie builds that tooltip from its map icons, so it exists only for quests Questie marks
+-- on the map: available ones at their giver, accepted ones at their objectives, finished ones at their
+-- turn-in. Questie redraws it on Shift only over the map and the minimap; for the guide this does.
+local QUESTIE_TYPE = {accept = "available", turnin = "complete"}
+local questieRow, questieIcon
+
+local function QuestieModule(name)
+    local loader, questie = _G.QuestieLoader, _G.Questie
+    if type(loader) ~= "table" or type(questie) ~= "table" or not (questie.API and questie.API.isReady) then return end
+    local ok, module = pcall(loader.ImportModule, loader, name)
+    if ok and type(module) == "table" then return module end
+end
+
+-- One world map icon per objective of the quest, those of the kind the line is about first.
+local function QuestieIcons(questId, tag)
+    local map = QuestieModule("QuestieMap")
+    if not (map and map.GetFramesForQuest) then return end
+    local ok, frames = pcall(map.GetFramesForQuest, map, questId)
+    if not ok or type(frames) ~= "table" then return end
+    local wanted = QUESTIE_TYPE[tag]
+    local matching, other, seen = {}, {}, {}
+    for _, frame in pairs(frames) do
+        local data = frame.data
+        -- Pooled frames are reused: the name list can point at a frame of another quest by now.
+        if type(data) == "table" and data.Id == questId and frame.miniMapIcon == false and frame.texture
+            and data.Type ~= "manual" then
+            local key = tostring(data.Type) .. ":" .. tostring(data.ObjectiveIndex or 0)
+            if not seen[key] then
+                seen[key] = true
+                local objective = data.Type ~= "available" and data.Type ~= "complete"
+                if data.Type == wanted or (not wanted and objective) then
+                    matching[#matching + 1] = frame
+                else
+                    other[#other + 1] = frame
+                end
+            end
+        end
+    end
+    local icons = #matching > 0 and matching or other
+    if #icons > 0 then return icons end
+end
+
+local function HideQuestieTooltip()
+    if not questieRow then return end
+    local row, icon = questieRow, questieIcon
+    questieRow, questieIcon = nil, nil
+    if GameTooltip:GetOwner() == row then GameTooltip:Hide() end
+    GameTooltip._Rebuild = nil
+    GameTooltip.ShownAsMapIcon = false
+    local frames = QuestieModule("QuestieFrame")
+    if frames and frames.ResetHoverHighlights and icon and icon.data then pcall(frames.ResetHoverHighlights, icon) end
+end
+
+-- owner: the frame the tooltip belongs to; element: {questId = , tag = } as in a guide step.
+local function ShowQuestieTooltip(row, element)
+    if not (element and ns.db.questie) then return false end
+    local tooltips = QuestieModule("MapIconTooltip")
+    if not (tooltips and tooltips.ShowOnTooltip) then return false end
+    local rxp = _G.RXP
+    local questId = element.questId
+    if type(rxp) == "table" and rxp.GetQuestId then questId = rxp.GetQuestId(questId, nil, true) or questId end
+    local icons = QuestieIcons(questId, element.tag)
+    if not icons then return false end
+    HideQuestieTooltip()
+    GameTooltip:Hide()      -- Questie skips a call that comes right after another while the tooltip is shown
+    questieRow, questieIcon = row, icons[1]
+    local ok = pcall(tooltips.ShowOnTooltip, icons[1], GameTooltip, row, icons)
+    if not ok or not GameTooltip:IsShown() or GameTooltip:GetOwner() ~= row then
+        HideQuestieTooltip()
+        return false
+    end
+    return true
+end
+
+-- The real quest ID of a line's quest (RestedXP maps some IDs to the variant of the character's race or class).
+local function RowQuestId(row)
+    local id = row.quest and row.quest.questId
+    local rxp = ns.GetRXP()
+    if id and rxp and rxp.GetQuestId then id = rxp.GetQuestId(id, nil, true) or id end
+    return id
+end
+
+-- For a quest the player does not have: which one it is, where it starts and what has to be done first.
+local function AddMissingLines(row)
+    GameTooltip:AddLine("You do not have this quest.", 1, 0.1, 0.1)
+    local id = RowQuestId(row)
+    local ok, hint = false, nil
+    if id and ns.QuestHint then ok, hint = pcall(ns.QuestHint, id) end
+    if not ok or type(hint) ~= "table" then return end
+    GameTooltip:AddLine(hint.name .. (hint.level and (" (level " .. hint.level .. ")") or ""), 1, 0.82, 0)
+    if hint.starter then
+        GameTooltip:AddLine("Starts at " .. hint.starter .. (hint.zone and (", " .. hint.zone) or ""), 1, 1, 1, true)
+    end
+    if #hint.before > 0 then
+        GameTooltip:AddLine(("Do these first (%d):"):format(#hint.before), 1, 0.5, 0.25)
+        for i = 1, math.min(#hint.before, 6) do GameTooltip:AddLine(i .. ". " .. hint.before[i], 0.9, 0.9, 0.9) end
+        if #hint.before > 6 then GameTooltip:AddLine(("... and %d more"):format(#hint.before - 6), 0.9, 0.9, 0.9) end
+    elseif hint.status == "level" then
+        GameTooltip:AddLine(("Needs level %d to pick it up."):format(hint.requiredLevel), 1, 0.5, 0.25)
+    elseif hint.status == "available" then
+        GameTooltip:AddLine("You can pick it up now.", 0.25, 1, 0.25)
+    end
+    if ns.ShowPrereqsFor then GameTooltip:AddLine("Click: show it in Missing Prerequisites", 0.5, 0.8, 1) end
+end
+
 local function Row_OnEnter(row)
     SetHoveredBlock(row.block)
     local tooltip = row.element and row.element.tooltip
     if type(tooltip) ~= "string" or tooltip == "" then tooltip = nil end
-    if tooltip or row.missing then
+    if ShowQuestieTooltip(row, row.quest) then
+        if tooltip or row.missing then GameTooltip:AddLine(" ") end
+        if tooltip then GameTooltip:AddLine(tooltip, 1, 1, 1, true) end
+        if row.missing then AddMissingLines(row) end
+        GameTooltip:Show()
+    elseif tooltip or row.missing then
         GameTooltip:SetOwner(row, "ANCHOR_LEFT")
         if tooltip then GameTooltip:AddLine(tooltip, 1, 1, 1, true) end
-        if row.missing then GameTooltip:AddLine("You do not have this quest.", 1, 0.1, 0.1) end
+        if row.missing then AddMissingLines(row) end
         GameTooltip:Show()
     end
 end
 
 local function Row_OnLeave(row)
     if hoveredBlock == row.block then SetHoveredBlock(nil) end
+    if questieRow == row then HideQuestieTooltip() end
     if GameTooltip:GetOwner() == row then GameTooltip:Hide() end
+end
+
+local modifierWatcher = CreateFrame("Frame")
+modifierWatcher:RegisterEvent("MODIFIER_STATE_CHANGED")
+modifierWatcher:SetScript("OnEvent", function(_, _, key)
+    if key ~= "LSHIFT" and key ~= "RSHIFT" then return end
+    local row = questieRow
+    if row and row:IsVisible() and row:IsMouseOver() and GameTooltip:GetOwner() == row then
+        local onEnter = row:GetScript("OnEnter")
+        if onEnter then onEnter(row) end
+    end
+end)
+
+-- For the prerequisites window.
+ns.QuestieModule = QuestieModule
+ns.ShowQuestieTooltip = ShowQuestieTooltip
+function ns.HideQuestieTooltip(owner)
+    if questieRow == owner then HideQuestieTooltip() end
 end
 
 -- The step before `from` that can become the current step again: sticky steps never are, hidden
@@ -349,20 +492,53 @@ local function SetCollapseButton(button, collapsed)
 end
 
 -- Looks like ObjectiveTrackerModuleHeaderTemplate; collapseKey is the saved setting it toggles.
+-- The guide's box from the last update, in the units of its position (the quest tracker's scale): top and bottom
+-- (one of them nil while the height is not limited), which edge stays put ("top" / "bottom") and the height in
+-- the guide's own units, nil while not limited.
+local box = {}
+
+-- Keeps where the guide stands now as its detached position.
+local function SavePosition()
+    local u = UserScale()
+    local left, top, bottom = root:GetLeft(), root:GetTop(), root:GetBottom()
+    if not (left and top and bottom) then return end
+    left, top, bottom = left * u, top * u, bottom * u
+    local height = (box.height or root:GetHeight()) * u
+    if ns.db.anchor == "BOTTOM" and box.height then top = bottom + height else bottom = top - height end
+    ns.db.position = {left = left, top = top, bottom = bottom}
+    root.placedAt = nil
+end
+
+local function StartMove()
+    -- Attached, the guide stays below the quest tracker (so tracked quests can stay above it): the two move together
+    -- in Edit Mode. Detached, its header bars drag it.
+    if ns.db.attach then return end
+    root.moving = true
+    root:StartMoving()
+end
+
+local function StopMove()
+    if not root.moving then return end
+    root:StopMovingOrSizing()
+    root.moving = nil
+    SavePosition()
+end
+
 local function CreateHeader(collapseKey)
     local header = CreateFrame("Button", nil, root)
-    header:SetSize(WIDTH, HEADER_HEIGHT + 1)
+    header:SetSize(Width(), HEADER_HEIGHT + 1)
     header:RegisterForClicks("RightButtonUp")
     header:RegisterForDrag("LeftButton")
 
     header.Background = header:CreateTexture(nil, "BACKGROUND")
     header.Background:SetAtlas("UI-QuestTracker-Secondary-Objective-Header", true)
     header.Background:SetPoint("CENTER")
+    header.backgroundWidth = header.Background:GetWidth()
 
     header.Text = header:CreateFontString(nil, "ARTWORK",
         ObjectiveTrackerHeaderFont and "ObjectiveTrackerHeaderFont" or "GameFontNormalMed2")
     header.Text:SetPoint("LEFT", 7, 0)
-    header.Text:SetWidth(WIDTH - 60)
+    header.Text:SetWidth(Width() - 60)
     header.Text:SetJustifyH("LEFT")
     header.Text:SetWordWrap(false)
 
@@ -379,18 +555,8 @@ local function CreateHeader(collapseKey)
     header:SetScript("OnClick", function() RXPFrame.DropDownMenu() end)
     header:SetScript("OnEnter", Header_OnEnter)
     header:SetScript("OnLeave", GameTooltip_Hide)
-    header:SetScript("OnDragStart", function()
-        if ns.db.attach then return end
-        root.moving = true
-        root:StartMoving()
-    end)
-    header:SetScript("OnDragStop", function()
-        if not root.moving then return end
-        root:StopMovingOrSizing()
-        root.moving = nil
-        ns.db.position = {left = root:GetLeft(), top = root:GetTop()}
-        root.placedAt = nil
-    end)
+    header:SetScript("OnDragStart", StartMove)
+    header:SetScript("OnDragStop", StopMove)
     return header
 end
 
@@ -558,6 +724,87 @@ local function Shop_OnClick(button)
     Shop_Update(button)
 end
 
+-- The info button next to a step's title: what the step's quests lead to in their chains (Questie's "Next in
+-- chain"), to see before doing or skipping one what comes after it.
+local hasFollowUps = {}     -- quest ID -> true / false; chains do not change, so asked once per quest
+
+local function HasFollowUps(id)
+    if hasFollowUps[id] == nil then
+        local ok, list = false, nil
+        if ns.QuestFollowUps then ok, list = pcall(ns.QuestFollowUps, id) end
+        if not ok or type(list) ~= "table" then return false end    -- not kept: Questie may not be ready yet
+        hasFollowUps[id] = #list > 0
+    end
+    return hasFollowUps[id]
+end
+
+local function FormatXp(xp)
+    return (BreakUpLargeNumbers and BreakUpLargeNumbers(xp) or tostring(xp)) .. " XP"
+end
+
+local MAX_FOLLOW_LINES = 12
+
+local function Info_OnEnter(button)
+    local row = button:GetParent()
+    SetHoveredBlock(row.block)
+    local inStep, sections, listed = {}, {}, {}
+    for _, id in ipairs(row.quests or {}) do inStep[id] = true end
+    for _, id in ipairs(button.quests or {}) do
+        local ok, list, name = false, nil, nil
+        if ns.QuestFollowUps then ok, list, name = pcall(ns.QuestFollowUps, id) end
+        if ok and type(list) == "table" and #list > 0 then
+            sections[#sections + 1] = {id = id, name = name, list = list}
+            for _, info in ipairs(list) do listed[info.id] = true end
+        end
+    end
+    -- A step quest that comes later in another step quest's chain is shown in that chain.
+    local shown = {}
+    for _, section in ipairs(sections) do
+        if not listed[section.id] then shown[#shown + 1] = section end
+    end
+    if #shown == 0 then shown = sections end
+
+    GameTooltip:SetOwner(button, "ANCHOR_LEFT")
+    GameTooltip:AddLine("Follow-up quests", 1, 1, 1)
+    for _, section in ipairs(shown) do
+        GameTooltip:AddLine(" ")
+        GameTooltip:AddLine((section.name or ("Quest " .. section.id)) .. " leads to:", 1, 0.82, 0)
+        local rest = 0
+        for i, info in ipairs(section.list) do
+            if info.status ~= "done" then rest = rest + (info.xp or 0) end
+            if i <= MAX_FOLLOW_LINES then
+                local left = (info.level and ("[" .. info.level .. "] ") or "") .. info.name
+                    .. (info.xp and ("  " .. FormatXp(info.xp)) or "")
+                local right, r, g, b
+                if info.status == "done" then
+                    right, r, g, b = "done", 0.5, 0.5, 0.5
+                elseif info.status == "log" then
+                    right, r, g, b = "in quest log", 1, 0.82, 0
+                elseif inStep[info.id] then
+                    right, r, g, b = "this step", 1, 1, 1
+                elseif info.step then
+                    right, r, g, b = "step " .. info.step, 0.25, 1, 0.25
+                else
+                    right, r, g, b = "not in this guide", 1, 0.5, 0.25
+                end
+                local shade = info.status == "done" and 0.5 or 0.9
+                GameTooltip:AddDoubleLine(left, right, shade, shade, shade, r, g, b)
+            end
+        end
+        if #section.list > MAX_FOLLOW_LINES then
+            GameTooltip:AddLine(("... and %d more"):format(#section.list - MAX_FOLLOW_LINES), 0.8, 0.8, 0.8)
+        end
+        if rest > 0 then GameTooltip:AddLine("Still open after it: " .. FormatXp(rest), 0.55, 0.75, 1) end
+    end
+    GameTooltip:Show()
+end
+
+local function Info_OnLeave(button)
+    local row = button:GetParent()
+    if hoveredBlock == row.block then SetHoveredBlock(nil) end
+    if GameTooltip:GetOwner() == button then GameTooltip:Hide() end
+end
+
 local function CreateRow()
     local font = ObjectiveTrackerLineFont and "ObjectiveTrackerLineFont" or "GameFontHighlight"
     local row = CreateFrame("Button", nil, root)
@@ -594,6 +841,16 @@ local function CreateRow()
     row.Shop:SetScript("OnEnter", Shop_OnEnter)
     row.Shop:SetScript("OnLeave", function(button) Row_OnLeave(button:GetParent()) end)
 
+    row.Info = CreateFrame("Button", nil, row)
+    row.Info:SetSize(INFO_SIZE, INFO_SIZE)
+    row.Info:SetNormalTexture(INFO_TEXTURE)
+    row.Info:SetHighlightTexture(INFO_TEXTURE, "ADD")
+    row.Info:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    row.Info:SetScript("OnClick", function(button, mouse) Row_OnClick(button:GetParent(), mouse) end)
+    row.Info:SetScript("OnEnter", Info_OnEnter)
+    row.Info:SetScript("OnLeave", Info_OnLeave)
+    row.Info:Hide()
+
     row.Text = row:CreateFontString(nil, "ARTWORK", font)
     row.Text:SetJustifyH("LEFT")
     row.Text:SetJustifyV("TOP")
@@ -608,7 +865,7 @@ end
 local function Build()
     root = CreateFrame("Frame", "RXPBlizzStyleTracker", UIParent)
     root:SetFrameStrata("LOW")
-    root:SetSize(WIDTH, HEADER_HEIGHT)
+    root:SetSize(Width(), HEADER_HEIGHT)
     root:SetMovable(true)
     root:SetClampedToScreen(true)
     root:Hide()
@@ -630,7 +887,20 @@ local function Build()
         GameTooltip:Show()
     end)
     activeHeader.Report:SetScript("OnLeave", GameTooltip_Hide)
-    activeHeader.Text:SetWidth(WIDTH - 114)
+    activeHeader.Prereqs = CreateFrame("Button", nil, activeHeader)
+    activeHeader.Prereqs:SetSize(16, 16)
+    activeHeader.Prereqs:SetPoint("RIGHT", activeHeader.Report, "LEFT", -2, 0)
+    activeHeader.Prereqs:SetNormalTexture("Interface\\GossipFrame\\AvailableQuestIcon")
+    activeHeader.Prereqs:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight", "ADD")
+    activeHeader.Prereqs:SetScript("OnClick", function() ns.TogglePrereqs() end)
+    activeHeader.Prereqs:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        GameTooltip:AddLine("Missing prerequisites", 1, 1, 1)
+        GameTooltip:AddLine("Quests of this guide you cannot pick up yet, with the quests that unlock them. Needs Questie.", 0.8, 0.8, 0.8, true)
+        GameTooltip:Show()
+    end)
+    activeHeader.Prereqs:SetScript("OnLeave", GameTooltip_Hide)
+    activeHeader.Text:SetWidth(Width() - 132)
     upcomingHeader = CreateHeader("upcomingCollapsed")
     upcomingHeader.Text:SetText("Upcoming Steps")
 
@@ -638,32 +908,41 @@ local function Build()
     wheelArea = CreateFrame("Frame", nil, root)
     wheelArea:EnableMouseWheel(true)
     wheelArea:SetScript("OnMouseWheel", function(_, delta)
+        -- Anchor Bottom has the later steps above: the wheel goes up to them.
+        if ns.db.anchor == "BOTTOM" then delta = -delta end
         if delta < 0 and not listIsFull then return end
         scrollOffset = math.max(0, scrollOffset - delta)
         ns.Refresh()
     end)
 
-    -- The lower end of the guide's window (option "Cut the guide off at a line"): a line across the
-    -- guide that is dragged up and down. It only shows while the mouse is on the guide.
+    -- The free end of the guide's box (option "Limit the guide's height"): a line across the guide that is dragged
+    -- up and down to set its height. It only shows while the mouse is on the guide.
     grip = CreateFrame("Button", nil, root)
     grip:SetFrameStrata("MEDIUM")
-    grip:SetSize(WIDTH, 12)
+    grip:SetSize(Width(), 12)
     local line = grip:CreateTexture(nil, "ARTWORK")
     line:SetColorTexture(1, 0.82, 0, 0.9)
     line:SetHeight(2)
     line:SetPoint("LEFT")
     line:SetPoint("RIGHT")
     grip:SetScript("OnMouseDown", function() gripDragging = true end)
-    grip:SetScript("OnMouseUp", function() gripDragging = false end)
+    grip:SetScript("OnMouseUp", function()
+        gripDragging = false
+        ns.SetOption("height", ns.db.height)
+    end)
     grip:SetScript("OnUpdate", function()
-        if not gripDragging then return end
+        if not gripDragging or not box.height then return end
+        local u = UserScale()
         local _, y = GetCursorPosition()
-        ns.db.bottom = math.max(0, y / root:GetEffectiveScale())
+        y = y / root:GetEffectiveScale() * u
+        local height = box.fixed == "bottom" and y - box.bottom or box.top - y
+        ns.db.height = ns.Clamp("height", height / u)
         ns.Refresh()
     end)
     grip:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-        GameTooltip:AddLine("Drag: where the guide gets cut off", 1, 1, 1)
+        GameTooltip:AddLine("Drag: height of the guide", 1, 1, 1)
+        GameTooltip:AddLine(("%d (Options > AddOns > RestedXP Blizzard Style > Display)"):format(Height()), 0.8, 0.8, 0.8, true)
         GameTooltip:Show()
     end)
     grip:SetScript("OnLeave", GameTooltip_Hide)
@@ -675,6 +954,25 @@ local function Build()
     dashWidth = measure:GetStringWidth()
     if not dashWidth or dashWidth < 4 then dashWidth = 10 end
     measure:Hide()
+end
+
+-- The width setting, applied to the frames that have a size of their own.
+local appliedWidth
+local function ApplyWidth()
+    local width = Width()
+    if width == appliedWidth then return end
+    appliedWidth = width
+    root:SetWidth(width)
+    for _, header in ipairs({activeHeader, upcomingHeader}) do
+        header:SetWidth(width)
+        if header.backgroundWidth and header.backgroundWidth > 0 then
+            header.Background:SetWidth(header.backgroundWidth * width / DEFAULT_WIDTH)
+        end
+    end
+    activeHeader.Text:SetWidth(width - 132)
+    upcomingHeader.Text:SetWidth(width - 60)
+    grip:SetWidth(width)
+    ns.forceRedraw = true
 end
 
 --------------------------------------------------------------------------------------------------
@@ -767,14 +1065,49 @@ function ns.ShopItem(step, element)
     return {id = element.id, qty = math.max(qty - count, 1)}
 end
 
+-- The line's element when it picks up, works on or hands in a quest (for Questie's tooltip).
+local function QuestElement(element)
+    if (element.tag == "accept" or element.tag == "turnin" or element.tag == "complete")
+        and type(element.questId) == "number" and element.questId > 0 then
+        return element
+    end
+end
+
+-- The step's quests (real IDs, each once), for the info button next to its title.
+local function StepQuests(rxp, step)
+    local list, seen = {}, {}
+    for _, element in ipairs(step.elements or {}) do
+        local quest = QuestElement(element)
+        if quest then
+            local id = rxp.GetQuestId and rxp.GetQuestId(quest.questId, nil, true) or quest.questId
+            if not seen[id] then
+                seen[id] = true
+                list[#list + 1] = id
+            end
+        end
+    end
+    return list
+end
+
+-- The step's quests that lead on to others (for the info button). Part of the signature: Questie gets ready
+-- after the first drawing, and the button has to appear then.
+local function FollowQuests(quests)
+    local list = {}
+    for _, id in ipairs(quests) do
+        if HasFollowUps(id) then list[#list + 1] = id end
+    end
+    return list
+end
+
 local function ActiveBlocks(rxp, signature)
     local blocks = {}
     local guide, current = rxp.currentGuide, rxp.GetGuideProgress()
     for _, step in ipairs(RXPFrame.activeSteps) do
         if step.active and not step.hidewindow and not step.hidetip then
-            local block = {index = step.index, lines = {}}
+            local block = {index = step.index, lines = {}, quests = StepQuests(rxp, step)}
+            block.follow = FollowQuests(block.quests)
             if not step.sticky or step.title then block.title = ns.StepTitle(rxp, step) end
-            AddToSignature(signature, "step", step.index, block.title)
+            AddToSignature(signature, "step", step.index, block.title, #block.follow)
             for _, element in ipairs(step.elements or {}) do
                 local text = ns.ElementText(rxp, element)
                 if text then
@@ -784,7 +1117,8 @@ local function ActiveBlocks(rxp, signature)
                                       ((element.completed or element.skip) and "done" or "todo")
                     local missing = state == "todo" and QuestMissing(rxp, guide, element, step.index, current)
                     local shop = ns.ShopItem(step, element)
-                    block.lines[#block.lines + 1] = {text = icon .. text, state = state, element = element, missing = missing, shop = shop}
+                    block.lines[#block.lines + 1] = {text = icon .. text, state = state, element = element, missing = missing, shop = shop,
+                        quest = QuestElement(element)}
                     AddToSignature(signature, state, icon, text, missing, shop and shop.id, shop and shop.qty)
                 end
             end
@@ -821,7 +1155,8 @@ local function UpcomingLines(rxp, guide, step, index, current)
             lines = lines or {}
             -- Objectives of a step that is not active yet have no text of their own and count as
             -- notes here, so the quest check does not depend on the state.
-            lines[#lines + 1] = {text = text, state = state, missing = QuestMissing(rxp, guide, element, index, current)}
+            lines[#lines + 1] = {text = text, state = state, missing = QuestMissing(rxp, guide, element, index, current),
+                quest = QuestElement(element)}
         end
     end
     return lines
@@ -849,8 +1184,11 @@ local function UpcomingBlocks(rxp, guide, signature)
                 if seen > scrollOffset then
                     local title = step.title and step.title ~= "" and GuideText(rxp, step.title) or
                                       rxp.locale.Get("Step %d"):format(index)
-                    blocks[#blocks + 1] = {index = index, title = title, lines = lines, upcoming = true}
-                    AddToSignature(signature, "next", index, title)
+                    local quests = StepQuests(rxp, step)
+                    local follow = FollowQuests(quests)
+                    blocks[#blocks + 1] = {index = index, title = title, lines = lines, upcoming = true,
+                        quests = quests, follow = follow}
+                    AddToSignature(signature, "next", index, title, #follow)
                     for _, line in ipairs(lines) do AddToSignature(signature, line.text, line.missing) end
                     if #blocks == count then break end
                 end
@@ -882,9 +1220,10 @@ local function PlaceRow(kind, line, block, y)
     row.state = kind == "line" and line.state or nil
     row.element = kind == "line" and line.element or nil
     row.missing = kind == "line" and line.missing or false
+    row.quest = kind == "line" and line.quest or nil
 
     local indent = kind == "line" and dashWidth or 0
-    local width = WIDTH - BLOCK_INDENT
+    local width = Width() - BLOCK_INDENT
     row.Dash:SetShown(row.state == "todo")
     row.Check:SetShown(row.state == "done")
     row.Toggle:SetShown(row.element ~= nil and row.state ~= "note" and not block.upcoming)
@@ -894,11 +1233,23 @@ local function PlaceRow(kind, line, block, y)
     row.Shop.item = shop
     row.Shop:SetShown(shop ~= nil)
     if shop then Shop_Update(row.Shop) end
-    row.Text:SetWidth(width - indent - (shop and SHOP_SIZE + 2 or 0))
+    -- The info button behind a step's title, when one of its quests leads on to others.
+    local follow = kind == "title" and block.follow or {}
+    row.quests = kind == "title" and block.quests or nil
+    row.Info.quests = follow
+    row.Info:SetShown(#follow > 0)
+    local textWidth = width - indent - (shop and SHOP_SIZE + 2 or 0) - (#follow > 0 and INFO_SIZE + 4 or 0)
+    row.Text:SetWidth(textWidth)
     local text = kind == "line" and line.text or block.title
     -- Names in guide text carry their own colours; a line that is red as a whole must not.
     if row.missing then text = (text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")) end
     row.Text:SetText(text)
+    if #follow > 0 then
+        local _, fontHeight = row.Text:GetFont()
+        local x = indent + math.min(row.Text:GetStringWidth() or 0, textWidth) + 4
+        row.Info:ClearAllPoints()
+        row.Info:SetPoint("CENTER", row, "TOPLEFT", x + INFO_SIZE / 2, -(fontHeight or 12) / 2)
+    end
     ColorRow(row)
 
     local height = math.max(row.Text:GetStringHeight() or 0, 10)
@@ -907,6 +1258,7 @@ local function PlaceRow(kind, line, block, y)
         usedRows = usedRows - 1
         return nil
     end
+    row.drawY = y
     row:ClearAllPoints()
     row:SetPoint("TOPLEFT", root, "TOPLEFT", BLOCK_INDENT, y)
     row:SetSize(width, height)
@@ -944,6 +1296,56 @@ local function DrawBlocks(blocks, y)
     return y, false
 end
 
+-- Moves the rows from first on, laid out top-down from 0, so that 0 is "top" above the guide's lower edge.
+local function Lift(first, top)
+    for index = first, usedRows do
+        local row = rows[index]
+        row:ClearAllPoints()
+        row:SetPoint("TOPLEFT", root, "BOTTOMLEFT", BLOCK_INDENT, top + row.drawY)
+    end
+end
+
+-- Anchor Bottom, like RestedXP's "Current step frame anchor": the current step at the bottom, the next steps above
+-- it, the nearest one closest, so the list grows upwards. Each block still reads top-down. Built from the lower edge
+-- up; returns the height. With a limit, the steps furthest away are the ones left out.
+local function DrawFlipped(active, upcoming, floor)
+    local limit = floor and -floor
+    drawFloor = limit and -(limit - HEADER_HEIGHT) or nil
+    local y, cut = 0, false
+    if not ns.db.activeCollapsed then y, cut = DrawBlocks(active, 0) end
+    local top = -y
+    Lift(1, top)
+    activeHeader:ClearAllPoints()
+    activeHeader:SetPoint("TOPLEFT", root, "BOTTOMLEFT", 0, top + HEADER_HEIGHT)
+    top = top + HEADER_HEIGHT
+
+    local showUpcoming = UpcomingCount() > 0 and (ns.db.upcomingCollapsed or #upcoming > 0)
+    local needed = MODULE_GAP + HEADER_HEIGHT + (ns.db.upcomingCollapsed and 0 or BLOCK_GAP + 30)
+    if cut or (limit and top + needed > limit) then showUpcoming = false end
+    upcomingHeader:SetShown(showUpcoming)
+    wheelArea:SetShown(showUpcoming and #upcoming > 0)
+    if showUpcoming then
+        top = top + MODULE_GAP
+        local listBottom = top
+        for _, block in ipairs(upcoming) do
+            local first = usedRows + 1
+            drawFloor = limit and -(limit - HEADER_HEIGHT - top) or nil
+            local below, blockCut = DrawBlocks({block}, 0)
+            Lift(first, top - below)
+            top = top - below
+            if blockCut then break end
+        end
+        upcomingHeader:ClearAllPoints()
+        upcomingHeader:SetPoint("TOPLEFT", root, "BOTTOMLEFT", 0, top + HEADER_HEIGHT)
+        SetCollapseButton(upcomingHeader.Collapse, ns.db.upcomingCollapsed)
+        wheelArea:ClearAllPoints()
+        wheelArea:SetPoint("BOTTOMLEFT", root, "BOTTOMLEFT", 0, listBottom)
+        wheelArea:SetPoint("TOPRIGHT", root, "BOTTOMRIGHT", 0, top)
+        top = top + HEADER_HEIGHT
+    end
+    return top
+end
+
 local function Draw(title, tooltipTitle, active, upcoming, floor)
     usedRows, nextBlock = 0, 0
     drawFloor = floor
@@ -952,10 +1354,17 @@ local function Draw(title, tooltipTitle, active, upcoming, floor)
     activeHeader.Next:SetShown(tooltipTitle ~= nil)
     activeHeader.Previous:SetShown(tooltipTitle ~= nil)
     activeHeader.tooltipTitle = tooltipTitle
-    activeHeader:ClearAllPoints()
-    activeHeader:SetPoint("TOPLEFT", root, "TOPLEFT", 0, 0)
     SetCollapseButton(activeHeader.Collapse, ns.db.activeCollapsed)
 
+    if ns.db.anchor == "BOTTOM" then
+        local height = DrawFlipped(active, upcoming, floor)
+        for index = usedRows + 1, #rows do rows[index]:Hide() end
+        root:SetHeight(math.max(height, HEADER_HEIGHT))
+        return
+    end
+
+    activeHeader:ClearAllPoints()
+    activeHeader:SetPoint("TOPLEFT", root, "TOPLEFT", 0, 0)
     local y, cut = -HEADER_HEIGHT, false
     if not ns.db.activeCollapsed then y, cut = DrawBlocks(active, y) end
 
@@ -1051,7 +1460,7 @@ local function TrackerAnchor(tracker)
 end
 
 local function DefaultPosition(scale)
-    return UIParent:GetWidth() / scale - WIDTH - 60, UIParent:GetHeight() / scale - 260
+    return UIParent:GetWidth() / scale - Width() * UserScale() - 60, UIParent:GetHeight() / scale - 260
 end
 
 -- The last spot below the quest tracker is kept across reloads, together with the guide's scale it belongs to.
@@ -1066,7 +1475,7 @@ end
 local function Place()
     local tracker = ObjectiveTrackerFrame
     local replaced = trackerHidden and trackerOrigin   -- the origin is gone only until it can be measured again
-    local scale = root:GetScale()   -- a shrunk tracker without its measurement says nothing: keep the last one
+    local scale = root.baseScale or 1   -- a shrunk tracker without its measurement says nothing: keep the last one
     if replaced then
         scale = trackerOrigin.scale
     elseif tracker and not trackerHidden then
@@ -1074,8 +1483,11 @@ local function Place()
     elseif not tracker then
         scale = 1
     end
-    if math.abs(root:GetScale() - scale) > 0.001 then
-        root:SetScale(scale)
+    -- Positions are in the quest tracker's scale; the guide is drawn at that scale times the Scale setting.
+    root.baseScale = scale
+    local u = UserScale()
+    if math.abs(root:GetScale() - scale * u) > 0.001 then
+        root:SetScale(scale * u)
         root.placedAt = nil
     end
 
@@ -1105,33 +1517,58 @@ local function Place()
             left, top = DefaultPosition(scale)
         end
     end
+    local bottom
     if not left then
         if not ns.db.position then
             -- Detached for the first time: stay where it is.
             local defaultLeft, defaultTop = DefaultPosition(scale)
-            ns.db.position = {left = root:GetLeft() or defaultLeft, top = root:GetTop() or defaultTop}
+            local l, t = root:GetLeft(), root:GetTop()
+            ns.db.position = {left = l and l * u or defaultLeft, top = t and t * u or defaultTop}
         end
-        left, top = ns.db.position.left, ns.db.position.top
+        left, top, bottom = ns.db.position.left, ns.db.position.top, ns.db.position.bottom
+        -- Detached, the anchor says which edge stays where it was dragged to.
+        if ns.db.anchor == "BOTTOM" and bottom then top = nil else bottom = nil end
     end
 
-    local placedAt = left .. ":" .. top
+    -- The box: the fixed edge, and the other one a height away, kept on the screen.
+    local height
+    if ns.db.limit then
+        local room = top or UIParent:GetHeight() / scale - bottom
+        height = math.min(Height(), math.max(room / u, MIN_ROOM))
+    end
+    box.fixed = top and "top" or "bottom"
+    if top then
+        bottom = height and top - height * u
+    else
+        top = height and bottom + height * u
+    end
+    box.top, box.bottom, box.height = top, bottom, height
+
+    local point = ns.db.anchor == "BOTTOM" and bottom and "BOTTOMLEFT" or "TOPLEFT"
+    local y = point == "BOTTOMLEFT" and bottom or top
+    local placedAt = point .. ":" .. left .. ":" .. y .. ":" .. u
     if root.placedAt ~= placedAt and not root.moving then
         root.placedAt = placedAt
+        root.anchorPoint = point
         root:ClearAllPoints()
-        root:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", left, top)
+        root:SetPoint(point, UIParent, "BOTTOMLEFT", left / u, y / u)
     end
-    return left, top
+    return left, height
 end
 
-local function PlaceGrip(left, top)
-    if not ns.db.limit or not ns.db.bottom then return grip:Hide() end
+local function PlaceGrip(left)
+    if not box.height then return grip:Hide() end
+    local u = UserScale()
+    local edge = box.fixed == "bottom" and box.top or box.bottom
     grip:ClearAllPoints()
-    grip:SetPoint("LEFT", UIParent, "BOTTOMLEFT", left, ns.db.bottom)
+    grip:SetPoint("LEFT", UIParent, "BOTTOMLEFT", left / u, edge / u)
     -- Only in the way while the mouse is on the guide.
-    local scale = root:GetEffectiveScale()
+    local scale = root:GetEffectiveScale() / u
     local x, y = GetCursorPosition()
     x, y = x / scale, y / scale
-    grip:SetShown(gripDragging or (x >= left and x <= left + WIDTH and y <= top and y >= ns.db.bottom - 12))
+    local margin = 12 * u
+    grip:SetShown(gripDragging or (x >= left and x <= left + Width() * u
+        and y <= box.top + margin and y >= box.bottom - margin))
 end
 
 --------------------------------------------------------------------------------------------------
@@ -1295,6 +1732,7 @@ local function PlaceStand()
     local tracker = ObjectiveTrackerFrame
     local text = tracker.Header and tracker.Header.Text and tracker.Header.Text:GetText()
     stand.Text:SetText(text or TRACKER_ALL_OBJECTIVES or "All Objectives")
+    stand:SetScale(1 / UserScale())
     stand:SetWidth(trackerOrigin.width)
     stand:ClearAllPoints()
     stand:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", trackerOrigin.left, trackerOrigin.top)
@@ -1361,22 +1799,11 @@ local function Update(rxp)
     end
     listIsFull = #upcoming >= UpcomingCount()
 
-    local left, top = Place()
+    ApplyWidth()
+    local left, height = Place()
     if not left then return end
-    local floor
-    if ns.db.limit then
-        -- Until the line has been dragged somewhere, the guide gets DEFAULT_WINDOW of height, but
-        -- stays out of the lowest fifth of the screen.
-        if not ns.db.bottom then
-            ns.db.bottom = math.max(top - DEFAULT_WINDOW, UIParent:GetHeight() / root:GetScale() * 0.2)
-        end
-        -- An open quest tracker can reach down to the line or past it. The guide keeps room for its
-        -- current step then, otherwise nothing but its bar would be left.
-        local tracker = ObjectiveTrackerFrame
-        local open = tracker and not trackerHidden and tracker.IsCollapsed and not tracker:IsCollapsed()
-        floor = math.min(ns.db.bottom - top, open and -MIN_ROOM or -HEADER_HEIGHT)
-    end
-    AddToSignature(signature, title, floor and math.floor(floor) or "")
+    local floor = height and -height or nil
+    AddToSignature(signature, title, floor and math.floor(floor) or "", Width(), ns.db.anchor)
 
     signature = table.concat(signature, "\031")
     if signature ~= lastSignature or ns.forceRedraw then
@@ -1384,7 +1811,7 @@ local function Update(rxp)
         ns.forceRedraw = nil
         Draw(title, tooltipTitle, active, upcoming, floor)
     end
-    PlaceGrip(left, top)
+    PlaceGrip(left)
     PlaceStand()
     root:Show()
 end

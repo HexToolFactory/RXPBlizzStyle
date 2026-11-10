@@ -7,12 +7,18 @@ Requires the RestedXP Guides addon. This is an independent addon and is not made
 ## What you get
 
 - The current step with its to-dos, and the upcoming steps below it, styled like a section of the quest tracker.
+- A small info button next to a step's title shows the quests that follow the step's quests in their chains, and whether this guide does them. Needs Questie.
 - Click the dash in front of a line to tick it off by hand. The two arrows in the header bar go to the previous or next step.
 - Right-click the header bar for guides and RestedXP's own options.
 - Shift-click an upcoming step to jump to it. Scroll over the upcoming steps to look further ahead.
-- The guide sits directly below the quest tracker, or anywhere you drag it.
-- The guide can be cut off at a line so it does not cover what sits below it. Move the mouse over the guide and drag the yellow line at its lower end.
+- The guide sits directly below the quest tracker and moves with it in Edit Mode, or anywhere you drag it.
+- Scale, width and height of the guide can be set (Options > AddOns > RestedXP Blizzard Style > Display). The height can also be set by dragging the yellow line that shows while the mouse is on the guide.
+- Anchor Bottom turns the guide around like RestedXP's "Current step frame anchor": the current step at the bottom, the next steps above it.
 - The current step is written below the waypoint arrow. If [TomTom](https://www.curseforge.com/wow/addons/tomtom) is installed, its arrow can point to the step instead.
+- With [Questie](https://www.curseforge.com/wow/addons/questie): hovering a quest line shows Questie's tooltip for that quest.
+- Missing Prerequisites (the quest-giver icon on the header bar, or `/rxpstyle prereqs`): every quest of the current guide you cannot pick up yet because a quest before it is not done and the guide does not do it, with the whole chain of quests that unlocks it, its objectives, the experience of the whole chain, and buttons to show where each quest starts, ends and is done on the map, or to share it. Needs Questie.
+
+![Missing Prerequisites window](media/missing-prerequisites.png)
 
 ## Options
 
