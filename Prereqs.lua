@@ -1432,6 +1432,8 @@ local function CreateWindow()
 
     local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
     close:SetPoint("RIGHT", strip, "RIGHT", 2, 0)
+    -- The template closes through HideUIPanel, which sets secure attributes and is blocked in a fight.
+    close:SetScript("OnClick", function() frame:Hide() end)
 
     -- Left: the guide's quests that cannot be picked up.
     frame.Count = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")

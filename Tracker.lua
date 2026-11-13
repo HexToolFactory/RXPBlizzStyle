@@ -2032,6 +2032,11 @@ ns.RegisterPart("going back", function(rxp)
     assert(type(rxp.UpdateStepCompletion) == "function", "RestedXP has no UpdateStepCompletion")
     local original = rxp.UpdateStepCompletion
     local function wrapper(...)
+        -- RestedXP's function fails without a guide (it reads currentGuide.empty): nothing to complete then.
+        if not rxp.currentGuide then
+            rxp.updateSteps = false
+            return
+        end
         local result = original(...)
         local pin = ns.db.pin
         local guide = rxp.currentGuide
@@ -2141,7 +2146,9 @@ ns.RegisterPart("missing prerequisite steps", function(rxp)
         for tag, wrapper in pairs(made) do functions[tag] = wrapper end
         wrappers = made
         Rebind(originals, wrappers)
-        rxp.updateSteps = true
+        -- Only with a guide: right after login RestedXP has none yet, and its UpdateStepCompletion reads
+        -- currentGuide without checking. The steps of a guide loaded later go through the wrappers anyway.
+        if rxp.currentGuide then rxp.updateSteps = true end
     end
     -- Switched off: let RestedXP skip what is held.
     if not ns.db.holdMissing and next(held) then
