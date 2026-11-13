@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.3.2
+
+- Fixed an error right after login ("attempt to index field 'currentGuide'"): the addon asked RestedXP to check the steps before RestedXP had loaded a guide.
+
 ## v1.3.1
 
 - The close button of Missing Prerequisites works during a fight again.
