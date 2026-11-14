@@ -20,6 +20,9 @@ ns.defaults = {
     tomtom = true,        -- hand the waypoint to TomTom's arrow when TomTom is loaded
     prereqPrompt = true,  -- ask about missing prerequisites when a guide is picked
     holdMissing = true,   -- keep steps RestedXP would skip for a missing prerequisite, until ticked off
+    reroute = true,       -- plan the route guide again as the player travels (Route.lua)
+    tagSpell = "",        -- a spell cast by RestedXP's target macro, to tag the step's mob ("": none)
+    dungeonRoute = true,  -- a Generate route button on the DungeonJournal addon's quest list (DungeonJournal.lua)
     -- Display
     scale = 1,            -- on top of the quest tracker's own scale
     width = 260,
@@ -230,12 +233,96 @@ local function ReportStep(add, rxp)
     if not guide then return add("No guide loaded.") end
     add(("Guide: %s / %s, version %s"):format(Plain(guide.group), Plain(guide.name), Plain(guide.version)))
     add("Guide progress: step " .. Plain(rxp.GetGuideProgress and rxp.GetGuideProgress()))
+    -- What the groups of Missing Prerequisites name towns by (ns.LandmarkReport in Prereqs.lua).
+    if ns.LandmarkReport then
+        local ok, text = pcall(ns.LandmarkReport)
+        add("Landmarks of this zone's map: " .. Plain(ok and text or "error: " .. tostring(text)))
+    end
     local steps = _G.RXPFrame and _G.RXPFrame.activeSteps or {}
     if #steps == 0 then add("No active step.") end
     for _, step in ipairs(steps) do
         add(("  Step %s, id %s: %s"):format(Plain(step.index), Plain(step.stepId), Plain(ns.StepTitle(rxp, step))))
         for _, element in ipairs(step.elements or {}) do ReportElement(add, rxp, element) end
     end
+end
+
+-- A number for the report: rounded, or what it is instead.
+local function Number(value, places)
+    if issecretvalue and issecretvalue(value) then return "<secret>" end
+    if type(value) ~= "number" then return tostring(value) end
+    return ("%." .. (places or 0) .. "f"):format(value)
+end
+
+local function YesNo(value)
+    if issecretvalue and issecretvalue(value) then return "<secret>" end
+    return value and "yes" or "no"
+end
+
+-- Why a step has no pin on the map: RestedXP's pin settings, the waypoints of the current and the next steps as its
+-- pin code sees them, and the pins it handed to the map library (HereBeDragons-Pins) with what became of them.
+local PIN_STEPS, PIN_LINES = 4, 4
+local function ReportPins(add, rxp)
+    local profile = type(rxp.settings) == "table" and type(rxp.settings.profile) == "table" and rxp.settings.profile or {}
+    add(("  RestedXP: %s pins, minimap pins hidden %s, pins disabled %s, gamepad %s, in an instance %s"):format(
+        Plain(profile.numMapPins), YesNo(profile.hideMiniMapPins), YesNo(profile.disableMapPins),
+        YesNo(rxp.IsGamePadEnabled and rxp.IsGamePadEnabled()), YesNo(IsInInstance and IsInInstance())))
+    local map = _G.WorldMapFrame
+    add(("  World map: open %s, showing map %s"):format(YesNo(map and map:IsShown()), Plain(map and map.GetMapID and map:GetMapID())))
+
+    local guide = rxp.currentGuide
+    if type(guide) ~= "table" or type(guide.steps) ~= "table" then return add("  No guide loaded.") end
+    local progress = tonumber(rxp.GetGuideProgress and rxp.GetGuideProgress()) or 1
+    local reached = type(_G.RXPCData) == "table" and type(_G.RXPCData.completedWaypoints) == "table" and _G.RXPCData.completedWaypoints or {}
+    for index = progress, math.min(progress + PIN_STEPS - 1, #guide.steps) do
+        local step = guide.steps[index]
+        local name = ("Step %d%s"):format(index, step.active and " (active)" or "")
+        local found = 0
+        for _, element in ipairs(step.elements or {}) do
+            if element.zone or element.x or element.wx then
+                found = found + 1
+                local flags = {}
+                if element.hidePin then flags[#flags + 1] = "pin hidden" end
+                if element.skip then flags[#flags + 1] = "skipped" end
+                if element.hidden then flags[#flags + 1] = "not active yet" end
+                if type(element.parent) == "table" and (element.parent.completed or element.parent.skip) then
+                    flags[#flags + 1] = "its objective is done"
+                end
+                local list = reached[step.index or "tip"]
+                if type(list) == "table" and element.wpHash and list[element.wpHash] then flags[#flags + 1] = "reached" end
+                add(("  %s, %s: map %s at %s, %s; world %s, %s in %s; id %s%s"):format(name, Plain(element.tag),
+                    Plain(element.zone), Number(element.x, 2), Number(element.y, 2), Number(element.wx), Number(element.wy),
+                    Plain(element.instance), Plain(element.wpHash), #flags > 0 and " [" .. table.concat(flags, ", ") .. "]" or ""))
+            end
+        end
+        if found == 0 then add("  " .. name .. ": no waypoint") end
+    end
+
+    local lib, version
+    if LibStub then lib, version = LibStub("HereBeDragons-Pins-2.0", true) end
+    if type(lib) ~= "table" then return add("  Map library (HereBeDragons-Pins): not loaded") end
+    add("  Map library (HereBeDragons-Pins): version " .. Plain(version))
+    local function pins(title, registry, store, drawn)
+        local icons = type(registry) == "table" and type(registry[rxp]) == "table" and registry[rxp] or {}
+        local count, lines = 0, {}
+        for icon in pairs(icons) do
+            count = count + 1
+            if count <= PIN_LINES then
+                local data = type(store) == "table" and type(store[icon]) == "table" and store[icon] or {}
+                local label = type(icon.text) == "table" and icon.text.GetText and icon.text:GetText()
+                local parent = icon.GetParent and icon:GetParent()
+                lines[#lines + 1] = ("    \"%s\": map %s, world %s, %s in %s; %s, shown %s, visible %s, alpha %s, %s x %s, scale %s"):format(
+                    Plain(label), Plain(data.uiMapID), Number(data.x), Number(data.y), Plain(data.instanceID),
+                    drawn and (drawn[icon] and "on the minimap" or "not on the minimap")
+                        or (parent and parent ~= UIParent and "on the map" or "not on the map"),
+                    YesNo(icon:IsShown()), YesNo(icon:IsVisible()), Number(icon:GetAlpha(), 2), Number(icon:GetWidth()),
+                    Number(icon:GetHeight()), Number(icon:GetScale(), 2))
+            end
+        end
+        add(("  %s from RestedXP: %d"):format(title, count))
+        for _, line in ipairs(lines) do add(line) end
+    end
+    pins("World map pins", lib.worldmapPinRegistry, lib.worldmapPins)
+    pins("Minimap pins", lib.minimapPinRegistry, lib.minimapPins, type(lib.activeMinimapPins) == "table" and lib.activeMinimapPins or {})
 end
 
 local function ReportQuests(add)
@@ -271,6 +358,7 @@ function ns.BuildReport()
     section(nil, ReportHeader, rxp)
     if rxp then
         section("Current step", ReportStep, rxp)
+        section("Map pins", ReportPins, rxp)
     else
         add("")
         add("RestedXP is not ready yet.")

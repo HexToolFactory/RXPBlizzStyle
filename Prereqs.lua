@@ -84,9 +84,20 @@ local function OnlyIfTaken(rxp, step)
     return only
 end
 
+-- The step the player is at in the guide.
+local function CurrentStep(rxp, guide)
+    if type(rxp.GetGuideProgress) ~= "function" then return 1 end
+    local ok, step = pcall(rxp.GetGuideProgress, guide)
+    return ok and tonumber(step) or 1
+end
+
+-- A pick-up line in a step the player is already past, of a quest they neither have nor did, picks nothing up any
+-- more (RestedXP skipped the step, or the player did): such a quest counts as one the guide only works on, from
+-- the steps still ahead (order[...].missed = the step of that line).
 local function GuideQuests(rxp, guide, player)
     local covered, order, stepOf, accepted = {}, {}, {}, {}
-    local work = {}
+    local work, missed = {}, {}
+    local current = CurrentStep(rxp, guide)
     for index, step in ipairs(guide.steps or {}) do
         local only = OnlyIfTaken(rxp, step)
         for _, element in ipairs(step.elements or {}) do
@@ -94,7 +105,9 @@ local function GuideQuests(rxp, guide, player)
             local tag = element.tag
             if type(id) == "number" and id > 0 and (tag == "accept" or tag == "turnin" or tag == "complete") then
                 local real = rxp.GetQuestId and rxp.GetQuestId(id, nil, true) or id
-                if tag == "accept" then
+                if tag == "accept" and index < current and not IsInLog(real, player) and not IsDone(real) then
+                    missed[real] = missed[real] or index
+                elseif tag == "accept" then
                     accepted[real] = true
                     covered[id], covered[real] = true, true
                     if not stepOf[real] then
@@ -109,9 +122,10 @@ local function GuideQuests(rxp, guide, player)
         end
     end
     for _, item in ipairs(work) do
-        if not accepted[item.id] and not stepOf[item.id] then
+        local missedAt = not accepted[item.id] and missed[item.id] or nil
+        if not accepted[item.id] and not stepOf[item.id] and not (missedAt and item.step < current) then
             stepOf[item.id] = item.step
-            order[#order + 1] = {id = item.id, step = item.step, kind = "handin", optional = item.optional}
+            order[#order + 1] = {id = item.id, step = item.step, kind = "handin", optional = item.optional, missed = missedAt}
         end
     end
     table.sort(order, function(a, b)
@@ -228,6 +242,53 @@ local function Starter(db, id)
     end
 end
 
+-- Whether the player has an item (bags or bank); true when the game does not say.
+local function HasItem(itemId)
+    local count = C_Item and C_Item.GetItemCount or GetItemCount
+    if not count then return true end
+    local ok, has = pcall(function() return count(itemId, true) > 0 end)
+    return not ok or has
+end
+
+-- Where an item comes from by Questie's data, as the rest of a sentence about it ("drops from ..."), or nil.
+local function ItemSource(db, itemId)
+    local rewards = Query(db, "QueryItemSingle", itemId, "questRewards")
+    if type(rewards) == "table" and type(rewards[1]) == "number" then
+        local name = QuestValue(db, rewards[1], "name")
+        if name then return "is a reward of the quest " .. name end
+    end
+    local sources = {
+        {"npcDrops", "QueryNPCSingle", "drops from %s", "drops from creatures (%d kinds)"},
+        {"objectDrops", "QueryObjectSingle", "is found in %s", "is found in objects (%d kinds)"},
+        {"vendors", "QueryNPCSingle", "is sold by %s", "is sold by vendors (%d)"},
+    }
+    for _, source in ipairs(sources) do
+        local ids = Query(db, "QueryItemSingle", itemId, source[1])
+        if type(ids) == "table" and #ids > 0 then
+            local name = #ids == 1 and Query(db, source[2], ids[1], "name")
+            return name and source[3]:format(name) or source[4]:format(#ids)
+        end
+    end
+end
+
+-- The item of a quest that only an item starts, when the player has none of them: item name, where it comes
+-- from, item ID.
+local function MissingStartItem(db, id)
+    local startedBy = QuestValue(db, id, "startedBy")
+    if type(startedBy) ~= "table" then return end
+    local function any(list) return type(list) == "table" and next(list) ~= nil end
+    if any(startedBy[1]) or any(startedBy[2]) or not any(startedBy[3]) then return end
+    local first
+    for _, itemId in pairs(startedBy[3]) do
+        if type(itemId) == "number" then
+            if HasItem(itemId) then return end
+            first = first or itemId
+        end
+    end
+    if not first then return end
+    return Query(db, "QueryItemSingle", first, "name") or ("item " .. first), ItemSource(db, first), first
+end
+
 -- Points of a spawn list ({[areaId] = {{x, y}, ...}}) added to places: {[uiMapId] = {{x, y, label}, ...}}.
 local function AddPoints(places, spawns, label)
     if type(spawns) ~= "table" then return end
@@ -272,6 +333,7 @@ end
 -- Items count where the NPCs and objects that drop them are.
 local function Objectives(db, id)
     local places, names, seen = {}, {}, {}
+    local count = 0
     local function Named(name)
         if type(name) == "string" and name ~= "" and not seen[name] then
             seen[name] = true
@@ -283,16 +345,19 @@ local function Objectives(db, id)
     if type(objectives) == "table" then
         for _, o in ipairs(type(objectives[1]) == "table" and objectives[1] or {}) do
             if type(o) == "table" then
+                count = count + 1
                 AddSpawns(db, "QueryNPCSingle", {o[1]}, Named(o[2] or Query(db, "QueryNPCSingle", o[1], "name")), places)
             end
         end
         for _, o in ipairs(type(objectives[2]) == "table" and objectives[2] or {}) do
             if type(o) == "table" then
+                count = count + 1
                 AddSpawns(db, "QueryObjectSingle", {o[1]}, Named(o[2] or Query(db, "QueryObjectSingle", o[1], "name")), places)
             end
         end
         for _, o in ipairs(type(objectives[3]) == "table" and objectives[3] or {}) do
             if type(o) == "table" then
+                count = count + 1
                 local name = Named(o[2] or Query(db, "QueryItemSingle", o[1], "name"))
                 AddSpawns(db, "QueryNPCSingle", Query(db, "QueryItemSingle", o[1], "npcDrops"), name, places)
                 AddSpawns(db, "QueryObjectSingle", Query(db, "QueryItemSingle", o[1], "objectDrops"), name, places)
@@ -300,6 +365,7 @@ local function Objectives(db, id)
         end
         for _, o in ipairs(type(objectives[5]) == "table" and objectives[5] or {}) do
             if type(o) == "table" then
+                count = count + 1
                 AddSpawns(db, "QueryNPCSingle", o[1], Named(o[3] or Query(db, "QueryNPCSingle", o[2], "name")), places)
             end
         end
@@ -317,7 +383,7 @@ local function Objectives(db, id)
             if type(o) == "table" and o[1] == source then given = true end
         end
     end
-    return places, names, given
+    return places, names, given, count
 end
 
 -- Who the quest is handed in to and where, like Starter.
@@ -337,6 +403,142 @@ local function QuestXp(id)
     return ok and type(xp) == "number" and xp > 0 and xp or nil
 end
 
+-- The place a quest is picked up at, for the groups of the list: a town or other landmark when the quest starts
+-- within TOWN_RADIUS of one (Goldshire, Booty Bay), else its zone. Landmarks are what the world map marks on the
+-- zone: its points of interest and its flight points. A capital has its own map and is its own place.
+local TOWN_RADIUS = 200     -- yards
+local CITY_MAPS = {[1453] = true, [1454] = true, [1455] = true, [1456] = true, [1457] = true, [1458] = true}
+local PLACE_ITEM, PLACE_UNKNOWN = "Starts from an item", "Unknown place"
+local landmarkCache = {}
+
+-- World coordinates (yards) of a point on a map, x and y 0-1, and the continent they are on.
+local function WorldPoint(mapId, x, y)
+    if not (C_Map and C_Map.GetWorldPosFromMapPos and CreateVector2D) then return end
+    local ok, continent, pos = pcall(C_Map.GetWorldPosFromMapPos, mapId, CreateVector2D(x, y))
+    if ok and type(pos) == "table" and pos.GetXY then
+        local wx, wy = pos:GetXY()
+        return wx, wy, continent
+    end
+end
+ns.WorldPoint = WorldPoint
+
+-- RestedXP's flight points of a continent as landmarks ("Booty Bay, Stranglethorn" is Booty Bay): they do not
+-- depend on what the game gives for a map.
+local taxiLandmarks = {}
+local function TaxiLandmarks(continent)
+    local list = taxiLandmarks[continent]
+    if list then return list end
+    list = {}
+    local rxp = _G.RXP
+    local nodes = type(rxp) == "table" and type(rxp.taxiPos) == "table" and rxp.taxiPos[continent]
+    for id, node in pairs(type(nodes) == "table" and nodes or {}) do
+        local name
+        for _, times in pairs(type(rxp.FPDB) == "table" and rxp.FPDB or {}) do
+            name = name or (type(times) == "table" and type(times[id]) == "table" and times[id].name)
+        end
+        name = type(name) == "string" and name:match("^%s*([^,]+)")
+        if name and type(node) == "table" and type(node.wx) == "number" and type(node.wy) == "number" then
+            list[#list + 1] = {name = name, x = node.wx, y = node.wy}
+        end
+    end
+    if #list > 0 then taxiLandmarks[continent] = list end
+    return list
+end
+
+local function Landmarks(mapId)
+    local list = landmarkCache[mapId]
+    if list then return list end
+    list = {}
+    local function add(name, position)
+        if type(name) ~= "string" or name == "" or type(position) ~= "table" or not position.GetXY then return end
+        local wx, wy, continent = WorldPoint(mapId, position:GetXY())
+        if wx then list[#list + 1] = {name = name, x = wx, y = wy, instance = continent} end
+    end
+    local poi = C_AreaPoiInfo
+    if poi and poi.GetAreaPOIForMap and poi.GetAreaPOIInfo then
+        local ok, ids = pcall(poi.GetAreaPOIForMap, mapId)
+        for _, id in ipairs(ok and type(ids) == "table" and ids or {}) do
+            local found, info = pcall(poi.GetAreaPOIInfo, mapId, id)
+            if found and type(info) == "table" then pcall(add, info.name, info.position) end
+        end
+    end
+    if C_TaxiMap and C_TaxiMap.GetTaxiNodesForMap then
+        local ok, nodes = pcall(C_TaxiMap.GetTaxiNodesForMap, mapId)
+        for _, node in ipairs(ok and type(nodes) == "table" and nodes or {}) do
+            -- "Booty Bay, Stranglethorn": the place is the part before the comma.
+            if type(node) == "table" and type(node.name) == "string" then
+                pcall(add, node.name:match("^%s*([^,]+)"), node.position)
+            end
+        end
+    end
+    -- Kept only once there is something: the game may not have the map's data yet.
+    if #list > 0 then landmarkCache[mapId] = list end
+    return list
+end
+
+-- For the debug report: the landmarks the game gives for the map the player is on.
+function ns.LandmarkReport()
+    local mapId = C_Map and C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player")
+    if not mapId then return "no map" end
+    local names = {}
+    for i, mark in ipairs(Landmarks(mapId)) do names[i] = mark.name end
+    return ("map %d, %d: %s"):format(mapId, #names, table.concat(names, ", "))
+end
+
+-- The name of the place at a spot of a map (x, y 0-100): the landmark it is at, else the zone.
+local function PlaceName(mapId, x, y, zone)
+    zone = zone or MapName(mapId) or PLACE_UNKNOWN
+    if CITY_MAPS[mapId] then return zone end
+    local wx, wy, continent = WorldPoint(mapId, x / 100, y / 100)
+    if not wx then return zone end
+    local best, bestDistance
+    for _, list in ipairs({Landmarks(mapId), continent and TaxiLandmarks(continent) or {}}) do
+        for _, mark in ipairs(list) do
+            local distance = math.sqrt((mark.x - wx) ^ 2 + (mark.y - wy) ^ 2)
+            if distance <= TOWN_RADIUS and (not bestDistance or distance < bestDistance) then
+                best, bestDistance = mark.name, distance
+            end
+        end
+    end
+    return best or zone
+end
+ns.PlaceName = PlaceName
+
+-- The spot of a place by its name, for where the hearthstone leads: a town with a flight point, a capital (the
+-- middle of its map) or a landmark of a zone's map; {x, y, instance} in world coordinates, nil when not found.
+function ns.FindPlace(name)
+    if type(name) ~= "string" or name == "" then return end
+    local wanted = name:lower()
+    local rxp = _G.RXP
+    for continent in pairs(type(rxp) == "table" and type(rxp.taxiPos) == "table" and rxp.taxiPos or {}) do
+        for _, mark in ipairs(TaxiLandmarks(continent)) do
+            if mark.name:lower() == wanted then return {x = mark.x, y = mark.y, instance = continent} end
+        end
+    end
+    for mapId in pairs(CITY_MAPS) do
+        local city = MapName(mapId)
+        if city and city:lower() == wanted then
+            local wx, wy, continent = WorldPoint(mapId, 0.5, 0.5)
+            if wx and continent then return {x = wx, y = wy, instance = continent} end
+        end
+    end
+    local zones
+    if C_Map and C_Map.GetMapChildrenInfo then
+        local ok, list = pcall(C_Map.GetMapChildrenInfo, 947, Enum and Enum.UIMapType and Enum.UIMapType.Zone or 3, true)
+        zones = ok and type(list) == "table" and list or nil
+    end
+    for _, zone in ipairs(zones or {}) do
+        for _, mark in ipairs(type(zone) == "table" and zone.mapID and Landmarks(zone.mapID) or {}) do
+            if mark.instance and mark.name:lower() == wanted then return {x = mark.x, y = mark.y, instance = mark.instance} end
+        end
+    end
+end
+
+local function PickupPlace(info)
+    if not (info.mapId and info.x and info.y) then return info.fromItem and PLACE_ITEM or PLACE_UNKNOWN end
+    return PlaceName(info.mapId, info.x, info.y, info.zone)
+end
+
 local function QuestInfo(db, player, covered, id)
     local level = QuestValue(db, id, "questLevel")
     local required = QuestValue(db, id, "requiredLevel")
@@ -347,20 +549,25 @@ local function QuestInfo(db, player, covered, id)
         requiredLevel = type(required) == "number" and required or nil,
     }
     info.starter, info.zone, info.mapId, info.x, info.y = Starter(db, id)
+    info.fromItem = type(info.starter) == "string" and info.starter:find("^Item: ") ~= nil or nil
     info.ender, info.endZone, info.endMapId, info.endX, info.endY = Ender(db, id)
     info.objective = ObjectiveText(db, id)
-    info.objectivePlaces, info.objectiveNames, info.objectiveGiven = Objectives(db, id)
+    info.objectivePlaces, info.objectiveNames, info.objectiveGiven, info.objectiveCount = Objectives(db, id)
     info.xp = QuestXp(id)
+    -- The quests still to be done before it (for the route planner: it waits for them).
+    info.needs = Requirements(db, player, covered, id)
     if not IsKnown(db, id) then
         info.status = "unknown"
     elseif IsInLog(id, player) then
         info.status = "log"
     elseif info.requiredLevel and info.requiredLevel > UnitLevel("player") then
         info.status = "level"
-    elseif #Requirements(db, player, covered, id) == 0 then
-        info.status = "available"
-    else
+    elseif #info.needs > 0 then
         info.status = "locked"
+    else
+        -- A quest that starts from an item cannot be picked up without it.
+        info.startItem, info.startItemSource, info.startItemId = MissingStartItem(db, id)
+        info.status = info.startItem and "item" or "available"
     end
     return info
 end
@@ -408,17 +615,24 @@ local function NoteUnknown(db, guideName, unknown)
     end
 end
 
--- {guide = name, quests = {{info, step, chain = {info, ...}}, ...}, unknown = {{id, name, step, why}, ...}}
+-- The guide whose quests count: the current one, or, while the route guide made from it runs (Route.lua), the
+-- guide that one leads back to.
+local function QuestGuide(rxp)
+    if type(rxp) ~= "table" then return end
+    return ns.RouteOrigin and ns.RouteOrigin(rxp) or rxp.currentGuide or nil
+end
+
+-- {guide = name, quests = {{info, step, place, chain = {info, ...}}, ...}, unknown = {{id, name, step, why}, ...}}
 -- or nil, reason
 function ns.PrereqData(rxp)
-    if type(rxp) ~= "table" or not rxp.currentGuide or rxp.currentGuide.empty then
+    local guide = QuestGuide(rxp)
+    if not guide or guide.empty then
         return nil, "No guide is loaded."
     end
     local db, player = Questie("QuestieDB"), Questie("QuestiePlayer")
     if not (db and db.QueryQuestSingle) then
         return nil, "This list needs Questie: its quest database knows which quests come before which."
     end
-    local guide = rxp.currentGuide
     local covered, order = GuideQuests(rxp, guide, player)
     local result = {guide = guide.displayName or guide.name, quests = {}, unknown = {}}
     local listed = {}
@@ -444,13 +658,15 @@ function ns.PrereqData(rxp)
             end
             if #chain > 0 then
                 local entry = QuestInfo(db, player, covered, id)
-                entry.step, entry.kind, entry.optional = item.step, item.kind, item.optional
+                entry.step, entry.kind, entry.optional, entry.missed = item.step, item.kind, item.optional, item.missed
                 entry.after = FollowingQuests(db, player, id)
                 entry.chain = {}
                 for i, pre in ipairs(chain) do
                     entry.chain[i] = QuestInfo(db, player, covered, pre)
                     if entry.chain[i].status == "unknown" then unknown(pre, item.step, "prerequisite of " .. id) end
                 end
+                -- Where the trip for it begins: at the first quest of its chain.
+                entry.place = PickupPlace(entry.chain[1])
                 result.quests[#result.quests + 1] = entry
             end
         end
@@ -475,13 +691,40 @@ function ns.PrereqData(rxp)
     return result
 end
 
+-- For other addons (RXPBlizzStyleAPI in Route.lua): the quests of a list as entries for the route planner. Each
+-- is to be picked up only; the quests before it that are not done are done in full, whatever guide is loaded.
+-- Returns entries ({info..., kind = "handin", chain = {info, ..., the quest itself}}) and what was left out
+-- ({{id, why = "unknown" / "done" / "log" / "notforyou"}, ...}); nil and the reason without Questie.
+function ns.QuestEntries(ids)
+    local db, player = Questie("QuestieDB"), Questie("QuestiePlayer")
+    if not (db and db.QueryQuestSingle) then return nil, "Questie is needed: its quest database knows where quests start." end
+    local entries, skipped, seen, covered = {}, {}, {}, {}
+    for _, id in ipairs(ids or {}) do
+        if type(id) == "number" and not seen[id] then
+            seen[id] = true
+            local why = not IsKnown(db, id) and "unknown" or IsDone(id) and "done" or IsInLog(id, player) and "log"
+                or not IsForMe(db, player, id) and "notforyou" or nil
+            if why then
+                skipped[#skipped + 1] = {id = id, why = why}
+            else
+                local entry = QuestInfo(db, player, covered, id)
+                entry.kind, entry.chain = "handin", {}
+                for i, before in ipairs(Chain(db, player, covered, id)) do entry.chain[i] = QuestInfo(db, player, covered, before) end
+                entry.chain[#entry.chain + 1] = QuestInfo(db, player, covered, id)
+                entries[#entries + 1] = entry
+            end
+        end
+    end
+    return entries, skipped
+end
+
 -- For the tracker's tooltip on a quest line of a quest the player does not have: the quest's info (name, starter,
 -- zone, status, ...) with before = {names of the quests to do first, earliest first}; nil without Questie.
 function ns.QuestHint(id)
     local db, player = Questie("QuestieDB"), Questie("QuestiePlayer")
     if not (db and db.QueryQuestSingle and type(id) == "number" and id > 0 and IsKnown(db, id)) then return end
     local rxp = _G.RXP
-    local guide = type(rxp) == "table" and rxp.currentGuide
+    local guide = QuestGuide(rxp)
     local covered = type(guide) == "table" and guide.steps and GuideQuests(rxp, guide, player) or {}
     local info = QuestInfo(db, player, covered, id)
     info.before = {}
@@ -530,9 +773,13 @@ end
 --------------------------------------------------------------------------------------------------
 -- Window
 
-local frame, listRows, chainRows = nil, {}, {}
+local HEADER_HEIGHT = 24    -- the place name above each group of the list
+local frame, listRows, chainRows, groupHeaders, routeRows = nil, {}, {}, {}, {}
+local routeMode = false     -- the parchment shows the route for the ticked quests instead of the chosen quest
+local routeWaypoint, ClearRouteWaypoint     -- see RouteRow_OnClick
 local data, selected
 local focusQuest    -- a quest to select at the next refresh (ns.ShowPrereqsFor)
+local focusMissed   -- that refresh found no entry for it
 
 local function SetBackdrop(f, bg, border, edge, inset)
     f:SetBackdrop({
@@ -564,6 +811,7 @@ local STATUS_TEXT = {
     log = {"In your quest log", 0.10, 0.25, 0.55},
     level = {"Needs level %d", 0.62, 0.08, 0.05},
     locked = {"Needs the quest above first", 0.40, 0.33, 0.24},
+    item = {"Needs its starting item", 0.62, 0.08, 0.05},
     unknown = {"Not in Questie's database", 0.45, 0.40, 0.34},
 }
 
@@ -1023,7 +1271,7 @@ local function CreateChainRow(parent)
     row.Objective:SetPoint("TOPLEFT", row.Meta, "BOTTOMLEFT", 0, -3)
     row.Objective:SetWidth(DETAIL_WIDTH - 16 - 58 - 8)
     row.Objective:SetJustifyH("LEFT")
-    if row.Objective.SetMaxLines then row.Objective:SetMaxLines(3) end
+    if row.Objective.SetMaxLines then row.Objective:SetMaxLines(4) end
     row.Objective:SetTextColor(unpack(INK))
     row.Objective:SetShadowColor(0, 0, 0, 0)
     row:SetScript("OnEnter", ChainRow_OnEnter)
@@ -1102,9 +1350,340 @@ local function MetaLine(info)
     return table.concat(parts, "  -  ")
 end
 
+--------------------------------------------------------------------------------------------------
+-- The route for the ticked quests (Route.lua), on the parchment in place of the chosen quest.
+
+local ROUTE_GAP = 2
+
+local function Duration(seconds)
+    local minutes = math.floor(seconds / 60 + 0.5)
+    if minutes < 1 then return "under 1 min" end
+    if minutes < 60 then return minutes .. " min" end
+    return ("%d h %02d min"):format(math.floor(minutes / 60), minutes % 60)
+end
+
+-- "Booty Bay, Stranglethorn" is Booty Bay.
+local function ShortPlace(name)
+    return type(name) == "string" and name:match("^%s*([^,]+)") or tostring(name)
+end
+
+-- The way to a stop in words: "fly Sentinel Hill to Booty Bay, ship Booty Bay - Ratchet, walk 4 min (12 min)".
+local function LegText(leg)
+    if not leg then return end
+    if leg.cross then return "on another continent, no way known" end
+    local bits = {}
+    for _, part in ipairs(leg.parts) do
+        if part.mode == "fly" then
+            bits[#bits + 1] = ("fly %s to %s"):format(ShortPlace(part.from), ShortPlace(part.to))
+        elseif part.mode == "ride" then
+            bits[#bits + 1] = ("%s %s"):format(part.kind, part.name)
+        elseif part.mode == "teleport" then
+            bits[#bits + 1] = "teleport to " .. part.name
+        elseif part.mode == "hearth" then
+            bits[#bits + 1] = "hearthstone to " .. part.name
+        elseif #leg.parts == 1 then
+            return "walk " .. Duration(part.seconds)
+        elseif part.seconds >= 60 then
+            bits[#bits + 1] = "walk " .. Duration(part.seconds)
+        end
+    end
+    if #bits == 0 then return "right there" end
+    return ("%s (%s)"):format(table.concat(bits, ", "), Duration(leg.seconds))
+end
+
+local function StopText(stop)
+    local quest = stop.info.name
+    if stop.kind == "finish" then
+        return "Go to " .. quest
+    elseif stop.kind == "pickup" then
+        return "Pick up " .. quest .. (stop.who and ("  -  " .. stop.who) or "")
+    elseif stop.kind == "item" then
+        return ("Find %s, it starts %s"):format(stop.who or "the item", quest)
+    elseif stop.kind == "objective" then
+        return "Do " .. quest .. (stop.who and ("  -  " .. stop.who) or "")
+    end
+    return "Hand in " .. quest .. (stop.who and ("  -  " .. stop.who) or "")
+end
+
+-- The experience of the guide's own quests that the ticked entries open up.
+local function UnlockedXp(entries)
+    local xp = 0
+    for _, entry in ipairs(entries) do xp = xp + (entry.xp or 0) end
+    return xp
+end
+
+-- A planned route in a few short lines: stops, time and experience, then what is worth a word.
+local function RouteSummary(route, entries)
+    local head = {("%d stop%s"):format(#route.stops, #route.stops == 1 and "" or "s"), "about " .. Duration(route.seconds)}
+    if route.xp > 0 then head[#head + 1] = FormatXp(route.xp) .. " on the way" end
+    local lines = {table.concat(head, "  -  ")}
+    local unlocked = UnlockedXp(entries)
+    if unlocked > 0 then lines[#lines + 1] = ("Opens up %s in the guide"):format(FormatXp(unlocked)) end
+    if route.hearth then lines[#lines + 1] = "Hearthstone to " .. route.hearth .. ", once" end
+    if route.teleports > 0 then
+        lines[#lines + 1] = ("%d teleport%s (%d rune%s in bags)"):format(route.teleports, route.teleports == 1 and "" or "s",
+            route.runes or 0, (route.runes or 0) == 1 and "" or "s")
+    end
+    if route.rides > 0 then
+        lines[#lines + 1] = ("%d ride%s by ship, zeppelin or tram (ship or zeppelin: %d min)"):format(route.rides,
+            route.rides == 1 and "" or "s", (ns.TRANSPORT_BEST + ns.TRANSPORT_WORST) / 120)
+    end
+    if route.crossings > 0 then
+        lines[#lines + 1] = ("%d way%s to another continent unknown, not counted"):format(route.crossings, route.crossings == 1 and "" or "s")
+    end
+    if route.unplaced > 0 then
+        lines[#lines + 1] = ("%d stop%s without a known place"):format(route.unplaced, route.unplaced == 1 and "" or "s")
+    end
+    for _, note in ipairs(route.notes or {}) do lines[#lines + 1] = note end
+    return lines
+end
+
+ns.RouteSummary, ns.RouteDuration, ns.FormatXp = RouteSummary, Duration, FormatXp
+ns.RouteStopText, ns.RouteLegText, ns.RouteUnlockedXp = StopText, LegText, UnlockedXp
+
+local function SelectedEntries()
+    local entries = {}
+    if not ns.RouteSelected then return entries end
+    for _, entry in ipairs(data and data.quests or {}) do
+        if ns.RouteSelected(entry.id) then entries[#entries + 1] = entry end
+    end
+    return entries
+end
+
+-- The route for these entries from where the player is now: true and the route, or false and the error.
+local function PlanSelected(entries)
+    return pcall(function()
+        local env = ns.RouteEnvironment()
+        local planned = ns.PlanRoute(entries, env)
+        planned.runes = env.runes
+        planned.source = {kind = "prereq"}
+        return planned
+    end)
+end
+
+-- The ticked quests of the guide as they stand now, for planning the route guide again (Route.lua).
+function ns.SelectedRouteEntries()
+    local result = ns.PrereqData(_G.RXP)
+    local entries = {}
+    for _, entry in ipairs(result and result.quests or {}) do
+        if ns.RouteSelected and ns.RouteSelected(entry.id) then entries[#entries + 1] = entry end
+    end
+    return entries
+end
+
+local function UpdateRouteButton()
+    local button = frame and frame.RouteButton
+    if not button then return end
+    -- Route.lua is a new file: until the game is restarted it is not there, and neither is the route.
+    button:SetShown(ns.PlanRoute ~= nil)
+    button:SetText("Generate route")
+    button:SetEnabled(routeMode or #SelectedEntries() > 0)
+end
+
+-- Hovering the button: what the detour costs and brings.
+local function RouteButton_OnEnter(button)
+    GameTooltip:SetOwner(button, "ANCHOR_BOTTOMRIGHT")
+    local entries = SelectedEntries()
+    if #entries == 0 then
+        GameTooltip:AddLine("Generate route", 1, 0.82, 0)
+        GameTooltip:AddLine("Tick the quests to go for in the list first.", 0.9, 0.9, 0.9, true)
+        GameTooltip:Show()
+        return
+    end
+    GameTooltip:AddLine(("Route for %d quest%s"):format(#entries, #entries == 1 and "" or "s"), 1, 0.82, 0)
+    local ok, route = PlanSelected(entries)
+    if not ok then
+        GameTooltip:AddLine("Could not be planned: " .. tostring(route), 1, 0.3, 0.3, true)
+        GameTooltip:Show()
+        return
+    end
+    local unlocked = UnlockedXp(entries)
+    GameTooltip:AddDoubleLine("Travel", "about " .. Duration(route.seconds), 0.9, 0.9, 0.9, 1, 1, 1)
+    GameTooltip:AddDoubleLine(("XP on the way (%d hand-in%s)"):format(route.handins, route.handins == 1 and "" or "s"),
+        FormatXp(route.xp), 0.9, 0.9, 0.9, 0.55, 0.75, 1)
+    GameTooltip:AddDoubleLine("XP it opens up in the guide", FormatXp(unlocked), 0.9, 0.9, 0.9, 0.55, 0.75, 1)
+    GameTooltip:AddDoubleLine("Total", FormatXp(route.xp + unlocked), 1, 0.82, 0, 0.55, 0.75, 1)
+    local lines = RouteSummary(route, entries)
+    for i = 3, #lines do GameTooltip:AddLine(lines[i], 0.8, 0.8, 0.8, true) end
+    GameTooltip:AddLine(" ")
+    GameTooltip:AddLine("Click: put it into RestedXP as a guide of its own; RestedXP returns to your guide after it.", 0.5, 0.8, 1, true)
+    GameTooltip:AddLine("Right-click: show the route here.", 0.5, 0.8, 1, true)
+    GameTooltip:AddLine("Times are estimates: straight lines, your flight points.", 0.6, 0.6, 0.6, true)
+    GameTooltip:Show()
+end
+
+-- A click on it: the route becomes a RestedXP guide of its own.
+local function GenerateRouteGuide()
+    local entries = SelectedEntries()
+    if #entries == 0 then return end
+    local ok, route = PlanSelected(entries)
+    if not ok then return ns.Print("The route could not be planned: " .. tostring(route)) end
+    local loaded, back = ns.LoadRouteGuide(route, nil, route.source)
+    if not loaded then return ns.Print("The route guide could not be made: " .. tostring(back)) end
+    ClearRouteWaypoint()
+    ns.Print(("Route guide loaded: %d stops, about %s.%s"):format(#route.stops, Duration(route.seconds),
+        type(back) == "table" and (" RestedXP returns to %s after it."):format(back.name) or ""))
+    routeMode = false
+    frame:Hide()
+end
+
+local function RouteRow_OnEnter(row)
+    row.Hover:Show()
+    local stop = row.stop
+    if not stop then return end
+    GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
+    GameTooltip:AddLine(StopText(stop), 1, 0.82, 0, true)
+    if stop.entry and stop.entry.id ~= stop.info.id then
+        GameTooltip:AddLine("For the guide's quest " .. stop.entry.name, 0.9, 0.9, 0.9, true)
+    end
+    if stop.mapId then
+        GameTooltip:AddLine(_G.TomTom and "Click: TomTom waypoint to it" or "Click: show it on the map", 0.5, 0.8, 1)
+    else
+        GameTooltip:AddLine("No place is known for this one.", 0.8, 0.8, 0.8)
+    end
+    GameTooltip:Show()
+end
+
+local function RouteRow_OnLeave(row)
+    row.Hover:Hide()
+    if GameTooltip:GetOwner() == row then GameTooltip:Hide() end
+end
+
+-- The TomTom waypoint of the stop clicked last: one at a time, and gone once the route is a guide (the guide's own
+-- waypoints lead from then on).
+function ClearRouteWaypoint()
+    local tomtom = _G.TomTom
+    if type(tomtom) ~= "table" or not tomtom.RemoveWaypoint then
+        routeWaypoint = nil
+        return
+    end
+    if routeWaypoint then pcall(tomtom.RemoveWaypoint, tomtom, routeWaypoint) end
+    routeWaypoint = nil
+    -- Leftovers of earlier clicks, which TomTom used to keep: every waypoint of this addon but the guide arrow's
+    -- own (Arrow.lua sets that one silent).
+    local stale = {}
+    for _, list in pairs(type(tomtom.waypoints) == "table" and tomtom.waypoints or {}) do
+        for _, uid in pairs(type(list) == "table" and list or {}) do
+            if type(uid) == "table" and uid.from == addonName and not uid.silent then stale[#stale + 1] = uid end
+        end
+    end
+    for _, uid in ipairs(stale) do pcall(tomtom.RemoveWaypoint, tomtom, uid) end
+end
+
+local function RouteRow_OnClick(row)
+    local stop = row.stop
+    if not (stop and stop.mapId and stop.x and stop.y) then return end
+    local tomtom = _G.TomTom
+    if type(tomtom) == "table" and tomtom.AddWaypoint then
+        ClearRouteWaypoint()
+        local ok, uid = pcall(tomtom.AddWaypoint, tomtom, stop.mapId, stop.x / 100, stop.y / 100,
+            {title = StopText(stop), from = addonName, persistent = false})
+        routeWaypoint = ok and uid or nil
+    else
+        ShowOnMap(stop.info, stop.kind == "turnin" and "end" or stop.kind == "objective" and "objective" or "start")
+    end
+    PlaySound(SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_ON)
+end
+
+local function CreateRouteRow(parent)
+    local row = CreateFrame("Button", nil, parent)
+    row.Hover = row:CreateTexture(nil, "BACKGROUND")
+    row.Hover:SetAllPoints()
+    row.Hover:SetColorTexture(0.45, 0.30, 0.10, 0.14)
+    row.Hover:Hide()
+    row.Number = row:CreateFontString(nil, "OVERLAY")
+    Font(row.Number, "QuestFont", "GameFontNormal")
+    row.Number:SetPoint("TOPLEFT", 4, -5)
+    row.Number:SetWidth(26)
+    row.Number:SetJustifyH("RIGHT")
+    row.Number:SetTextColor(unpack(INK))
+    row.Number:SetShadowColor(0, 0, 0, 0)
+    row.Text = row:CreateFontString(nil, "OVERLAY")
+    Font(row.Text, "QuestFont", "GameFontHighlight")
+    row.Text:SetPoint("TOPLEFT", 38, -5)
+    row.Text:SetPoint("RIGHT", -8, 0)
+    row.Text:SetJustifyH("LEFT")
+    row.Text:SetWordWrap(false)
+    row.Text:SetTextColor(unpack(INK))
+    row.Text:SetShadowColor(0, 0, 0, 0)
+    row.Way = row:CreateFontString(nil, "OVERLAY")
+    Font(row.Way, "QuestFontNormalSmall", "GameFontHighlightSmall")
+    row.Way:SetPoint("TOPLEFT", row.Text, "BOTTOMLEFT", 0, -3)
+    row.Way:SetWidth(DETAIL_WIDTH - 38 - 16)
+    row.Way:SetJustifyH("LEFT")
+    if row.Way.SetMaxLines then row.Way:SetMaxLines(3) end
+    row.Way:SetTextColor(unpack(INK_SOFT))
+    row.Way:SetShadowColor(0, 0, 0, 0)
+    row:SetScript("OnEnter", RouteRow_OnEnter)
+    row:SetScript("OnLeave", RouteRow_OnLeave)
+    row:SetScript("OnClick", RouteRow_OnClick)
+    return row
+end
+
+-- Whether the player is somewhere else than where the shown route starts (more than REPLAN_YARDS away, on another
+-- continent, or their place only became known).
+local REPLAN_YARDS = 40
+local function RouteMoved()
+    if InCombatLockdown() then return false end     -- nothing is planned in a fight
+    local ok, x, y, _, instance = pcall(UnitPosition, "player")
+    local secret = issecretvalue and (issecretvalue(x) or issecretvalue(y) or issecretvalue(instance))
+    if not ok or secret or type(x) ~= "number" or type(y) ~= "number" or not instance then return false end
+    local from = frame.routeFrom
+    if not from then return false end
+    return from.instance ~= instance or (from.x - x) ^ 2 + (from.y - y) ^ 2 > REPLAN_YARDS ^ 2
+end
+
+local function ShowRoute()
+    local detail = frame.Detail
+    detail.Section:Hide()
+    detail.ChainXp:Hide()
+    detail.Then:Hide()
+    detail.After:Hide()
+    local entries = SelectedEntries()
+    local ok, route = false, nil
+    if #entries > 0 then ok, route = PlanSelected(entries) end
+    -- Where this route starts, for RouteMoved; false: nothing that moving on would change.
+    frame.routeFrom = ok and route.from or false
+    if not ok then
+        detail.Title:SetText("Route")
+        detail.Intro:SetText(#entries == 0 and "Tick the quests to go for in the list."
+            or ("The route could not be planned: " .. tostring(route)))
+        detail.Content:SetHeight(200)
+        return
+    end
+    detail.Title:SetText(("Route for %d quest%s"):format(#entries, #entries == 1 and "" or "s"))
+    local intro = table.concat(RouteSummary(route, entries), "\n")
+    detail.Intro:SetText(intro)
+    local y = -(detail.Intro:GetStringHeight() + 52)
+    for i, stop in ipairs(route.stops) do
+        local row = routeRows[i]
+        if not row then
+            row = CreateRouteRow(detail.Content)
+            routeRows[i] = row
+        end
+        row.stop = stop
+        row:ClearAllPoints()
+        row:SetPoint("TOPLEFT", 8, y)
+        row:SetPoint("RIGHT", detail.Content, "RIGHT", -8, 0)
+        row.Number:SetText(i .. ".")
+        row.Text:SetText(StopText(stop))
+        local place = stop.mapId and ns.PlaceName and ns.PlaceName(stop.mapId, stop.x, stop.y) or "anywhere"
+        local way = LegText(stop.leg)
+        row.Way:SetText(place .. (way and ("  -  " .. way) or ""))
+        local height = math.ceil(5 + row.Text:GetStringHeight() + 3 + row.Way:GetStringHeight() + 6)
+        row:SetHeight(height)
+        row:Show()
+        y = y - height - ROUTE_GAP
+    end
+    detail.Content:SetHeight(-y + 30)
+end
+
 local function ShowDetail()
     local detail = frame.Detail
     for _, row in ipairs(chainRows) do row:Hide() end
+    for _, row in ipairs(routeRows) do row:Hide() end
+    UpdateRouteButton()
+    if routeMode and ns.PlanRoute then return ShowRoute() end
     local item = data and data.display[selected]
     local entry = item and item.kind == "quest" and item.entry
     if item and item.kind == "unknown" then
@@ -1135,7 +1714,10 @@ local function ShowDetail()
     detail.Title:SetText(entry.name)
     local intro
     if entry.kind == "handin" then
-        intro = ("The guide works on or hands in this quest in step %d, but you do not have it, and this guide does not pick it up."):format(entry.step)
+        intro = entry.missed
+            and ("The guide works on or hands in this quest in step %d, but you do not have it: you are past step %d, where the guide picks it up.")
+                :format(entry.step, entry.missed)
+            or ("The guide works on or hands in this quest in step %d, but you do not have it, and this guide does not pick it up."):format(entry.step)
         if entry.optional then
             intro = intro .. (ns.db.holdMissing
                 and " That step is only for players who already have the quest: the guide keeps it with a red line, tick that off to skip the step."
@@ -1196,7 +1778,14 @@ local function ShowDetail()
         -- What the quest asks for: Questie's objective text, else the names of what it is about.
         local objective = info.objective
             or (info.objectiveNames and #info.objectiveNames > 0 and table.concat(info.objectiveNames, ", "))
-        row.Objective:SetText(objective and ("Objective: " .. objective) or "")
+        objective = objective and ("Objective: " .. objective) or nil
+        -- A quest waiting for the item that starts it: where that item comes from, above the objective.
+        if info.status == "item" then
+            local note = ("Starts from %s%s."):format(info.startItem,
+                info.startItemSource and (", which " .. info.startItemSource) or ", which you do not have")
+            objective = objective and (note .. "\n" .. objective) or note
+        end
+        row.Objective:SetText(objective or "")
         row.Objective:SetShown(objective ~= nil)
         row.StartButton:ClearAllPoints()
         row.StartButton:SetPoint("TOPLEFT", objective and row.Objective or row.Meta, "BOTTOMLEFT", -2, -5)
@@ -1242,6 +1831,7 @@ end
 
 local function ListRow_OnClick(row)
     selected = row.index
+    routeMode = false
     for _, other in ipairs(listRows) do if other:IsShown() then ColorListRow(other) end end
     ShowDetail()
     frame.Detail.Scroll:SetVerticalScroll(0)
@@ -1260,6 +1850,19 @@ end
 local function ListRow_OnLeave(row)
     if ns.HideQuestieTooltip then ns.HideQuestieTooltip(row) end
     if GameTooltip:GetOwner() == row then GameTooltip:Hide() end
+end
+
+local function ListCheck_OnClick(check)
+    local item = data and data.display and data.display[check:GetParent().index]
+    if not (item and item.kind == "quest" and ns.SetRouteSelected) then return end
+    ns.SetRouteSelected(item.entry.id, check:GetChecked() and true or false)
+    PlaySound(check:GetChecked() and SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_ON or SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_OFF)
+    if routeMode then
+        ShowDetail()
+        UpdateScrollBar(frame.Detail.Scroll)
+    else
+        UpdateRouteButton()
+    end
 end
 
 local function CreateListRow(parent)
@@ -1290,35 +1893,104 @@ local function CreateListRow(parent)
     row.Meta = row:CreateFontString(nil, "OVERLAY")
     Font(row.Meta, "QuestFontNormalSmall", "GameFontHighlightSmall")
     row.Meta:SetPoint("TOPLEFT", row.Name, "BOTTOMLEFT", 0, -5)
-    row.Meta:SetPoint("RIGHT", -8, 0)
+    row.Meta:SetPoint("RIGHT", -32, 0)
     row.Meta:SetJustifyH("LEFT")
     row.Meta:SetWordWrap(false)
     row.Meta:SetTextColor(0.78, 0.74, 0.66)
+    -- On the route or not.
+    row.Check = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
+    row.Check:SetSize(24, 24)
+    row.Check:SetPoint("BOTTOMRIGHT", -4, 3)
+    row.Check:SetScript("OnClick", ListCheck_OnClick)
+    row.Check:SetScript("OnEnter", function(check)
+        GameTooltip:SetOwner(check, "ANCHOR_RIGHT")
+        GameTooltip:AddLine("On the route", 1, 0.82, 0)
+        GameTooltip:AddLine("The Route button plans one trip through everything that has to be done before the ticked quests.", 0.9, 0.9, 0.9, true)
+        GameTooltip:Show()
+    end)
+    row.Check:SetScript("OnLeave", function(check)
+        if GameTooltip:GetOwner() == check then GameTooltip:Hide() end
+    end)
     row:SetScript("OnClick", ListRow_OnClick)
     row:SetScript("OnEnter", ListRow_OnEnter)
     row:SetScript("OnLeave", ListRow_OnLeave)
     return row
 end
 
+local function CreateGroupHeader(parent)
+    local header = CreateFrame("Frame", nil, parent)
+    header:SetHeight(HEADER_HEIGHT)
+    header.Count = header:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    header.Count:SetPoint("BOTTOMRIGHT", -6, 6)
+    header.Count:SetTextColor(0.78, 0.74, 0.66)
+    header.Name = header:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    header.Name:SetPoint("BOTTOMLEFT", 4, 5)
+    header.Name:SetPoint("RIGHT", header.Count, "LEFT", -8, 0)
+    header.Name:SetJustifyH("LEFT")
+    header.Name:SetWordWrap(false)
+    header.Name:SetTextColor(unpack(GOLD))
+    local line = Line(header, "ARTWORK", 0.68, 0.52, 0.20, 0.45)
+    line:SetPoint("BOTTOMLEFT", 2, 1)
+    line:SetPoint("BOTTOMRIGHT", -2, 1)
+    line:SetHeight(1)
+    return header
+end
+
+-- The rows of the list: the quests grouped by the place their trip begins at (entry.place), the groups in the
+-- order of the guide's steps, then the quests Questie does not know. The first row of a group carries its
+-- header: {kind = "quest" / "unknown", entry, header = place, groupSize}.
+function ns.PrereqDisplay(result)
+    local display, groups, byPlace = {}, {}, {}
+    for _, entry in ipairs(result and result.quests or {}) do
+        local place = entry.place or "Unknown place"
+        local group = byPlace[place]
+        if not group then
+            group = {}
+            byPlace[place] = group
+            groups[#groups + 1] = group
+        end
+        group[#group + 1] = {kind = "quest", entry = entry, header = #group == 0 and place or nil}
+    end
+    local unknown = {}
+    for _, entry in ipairs(result and result.unknown or {}) do
+        unknown[#unknown + 1] = {kind = "unknown", entry = entry, header = #unknown == 0 and "Not in Questie's database" or nil}
+    end
+    if #unknown > 0 then groups[#groups + 1] = unknown end
+    for _, group in ipairs(groups) do
+        group[1].groupSize = #group
+        for _, item in ipairs(group) do display[#display + 1] = item end
+    end
+    return display
+end
+
 local function Refresh()
     if not frame or not frame:IsShown() then return end
     local reason, rxp = nil, _G.RXP
     frame.shownGuide = type(rxp) == "table" and rxp.currentGuide or nil
+    -- The chosen quest stays chosen when the list changes around it.
+    local before = data and data.display and data.display[selected]
+    local chosenId = before and before.entry.id
     data, reason = ns.PrereqData(rxp)
     frame.reason = reason
     frame.Guide:SetText(data and data.guide or "")
     local quests = data and data.quests or {}
-    local display = {}
-    for _, entry in ipairs(quests) do display[#display + 1] = {kind = "quest", entry = entry} end
-    for _, entry in ipairs(data and data.unknown or {}) do display[#display + 1] = {kind = "unknown", entry = entry} end
+    local display = ns.PrereqDisplay(data)
     if data then data.display = display end
+    for index, item in ipairs(display) do
+        if chosenId and item.entry.id == chosenId then
+            selected = index
+            break
+        end
+    end
     if focusQuest then
         -- The entry for that quest, or the one whose chain has it.
+        focusMissed = data ~= nil
         for index, item in ipairs(display) do
             local found = item.entry.id == focusQuest
             for _, info in ipairs(item.entry.chain or {}) do found = found or info.id == focusQuest end
             if found then
                 selected = index
+                focusMissed = false
                 break
             end
         end
@@ -1328,8 +2000,25 @@ local function Refresh()
     local count = data and (#quests == 1 and "1 quest you cannot pick up" or (#quests .. " quests you cannot pick up")) or ""
     if data and #data.unknown > 0 then count = count .. (", %d unknown"):format(#data.unknown) end
     frame.Count:SetText(count)
+    local y, headers = 0, 0
     for i, item in ipairs(display) do
         local entry = item.entry
+        if item.header then
+            headers = headers + 1
+            local header = groupHeaders[headers]
+            if not header then
+                header = CreateGroupHeader(frame.List.Content)
+                groupHeaders[headers] = header
+            end
+            header:ClearAllPoints()
+            header:SetPoint("TOPLEFT", 0, -y)
+            header:SetPoint("RIGHT", frame.List.Content, "RIGHT", 0, 0)
+            header.Name:SetText(item.header)
+            header.Count:SetText(item.groupSize == 1 and "1 quest" or (item.groupSize .. " quests"))
+            header:Show()
+            item.headerY = y
+            y = y + HEADER_HEIGHT + ROW_GAP
+        end
         local row = listRows[i]
         if not row then
             row = CreateListRow(frame.List.Content)
@@ -1337,10 +2026,14 @@ local function Refresh()
         end
         row.index = i
         row:ClearAllPoints()
-        row:SetPoint("TOPLEFT", 0, -(i - 1) * (ROW_HEIGHT + ROW_GAP))
+        row:SetPoint("TOPLEFT", 0, -y)
         row:SetPoint("RIGHT", frame.List.Content, "RIGHT", 0, 0)
+        item.y = y
+        y = y + ROW_HEIGHT + ROW_GAP
         local meta, xp
         row.Name:SetText(entry.name)
+        row.Check:SetShown(item.kind == "quest" and ns.PlanRoute ~= nil)
+        row.Check:SetChecked(item.kind == "quest" and ns.RouteSelected ~= nil and ns.RouteSelected(entry.id))
         if item.kind == "unknown" then
             row.Icon:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark")
             row.Icon:SetDesaturated(true)
@@ -1365,7 +2058,8 @@ local function Refresh()
         row:Show()
     end
     for i = #display + 1, #listRows do listRows[i]:Hide() end
-    frame.List.Content:SetHeight(math.max(#display * (ROW_HEIGHT + ROW_GAP), 1))
+    for i = headers + 1, #groupHeaders do groupHeaders[i]:Hide() end
+    frame.List.Content:SetHeight(math.max(y, 1))
     ShowDetail()
     UpdateScrollBar(frame.List)
     UpdateScrollBar(frame.Detail.Scroll)
@@ -1434,6 +2128,25 @@ local function CreateWindow()
     close:SetPoint("RIGHT", strip, "RIGHT", 2, 0)
     -- The template closes through HideUIPanel, which sets secure attributes and is blocked in a fight.
     close:SetScript("OnClick", function() frame:Hide() end)
+
+    -- The route for the ticked quests, in place of the chosen quest's page, and back.
+    frame.RouteButton = CreateFrame("Button", nil, frame, "UIPanelButtonTemplate")
+    frame.RouteButton:SetSize(110, 22)
+    frame.RouteButton:SetPoint("RIGHT", close, "LEFT", -6, 0)
+    frame.RouteButton:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    if frame.RouteButton.SetMotionScriptsWhileDisabled then frame.RouteButton:SetMotionScriptsWhileDisabled(true) end
+    frame.RouteButton:SetScript("OnClick", function(_, mouseButton)
+        GameTooltip:Hide()
+        if mouseButton ~= "RightButton" then return GenerateRouteGuide() end
+        routeMode = not routeMode
+        ShowDetail()
+        frame.Detail.Scroll:SetVerticalScroll(0)
+        UpdateScrollBar(frame.Detail.Scroll)
+    end)
+    frame.RouteButton:SetScript("OnEnter", RouteButton_OnEnter)
+    frame.RouteButton:SetScript("OnLeave", function(button)
+        if GameTooltip:GetOwner() == button then GameTooltip:Hide() end
+    end)
 
     -- Left: the guide's quests that cannot be picked up.
     frame.Count = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -1518,6 +2231,11 @@ local function CreateWindow()
         if (guide or nil) ~= frame.shownGuide then
             selected = nil
             Refresh()
+        elseif routeMode and ns.PlanRoute and RouteMoved() then
+            -- The player went on: the route starts where they are now, and the next stop is the one that is
+            -- nearest in travel time from there.
+            ShowDetail()
+            UpdateScrollBar(frame.Detail.Scroll)
         end
     end)
     frame:Hide()
@@ -1531,13 +2249,32 @@ end
 -- Opens the window at the entry of a quest (a click on a quest line of a quest the player does not have).
 function ns.ShowPrereqsFor(id)
     if not frame then CreateWindow() end
-    focusQuest = id
+    focusQuest, focusMissed = id, false
     if frame:IsShown() then Refresh() else frame:Show() end
     focusQuest = nil
+    if focusMissed then
+        -- Nothing to select: say why the list has no entry for it instead of showing another quest without a word.
+        focusMissed = false
+        local ok, hint = pcall(ns.QuestHint, id)
+        hint = ok and type(hint) == "table" and hint or nil
+        local why = "no quest has to be done before it"
+        if hint and hint.status == "item" then
+            why = ("it starts from the item %s, which you do not have"):format(hint.startItem)
+        elseif hint and hint.status == "level" then
+            why = ("it needs level %d"):format(hint.requiredLevel)
+        elseif hint and hint.status == "available" then
+            why = "you can pick it up now"
+        end
+        ns.Print(("Missing Prerequisites has no entry for %s: %s."):format(hint and hint.name or ("quest " .. id), why))
+        return
+    end
     if selected then
         local scroll = frame.List
         local range = scroll:GetVerticalScrollRange() or 0
-        scroll:SetVerticalScroll(math.max(0, math.min(range, (selected - 1) * (ROW_HEIGHT + ROW_GAP))))
+        -- To the chosen row, with the header of its group when it is the group's first.
+        local item = data and data.display and data.display[selected]
+        local y = item and (item.headerY or item.y) or 0
+        scroll:SetVerticalScroll(math.max(0, math.min(range, y)))
     end
 end
 
@@ -1558,6 +2295,7 @@ local PROMPT_WAIT = 30      -- how long a picked guide waits for Questie and its
 
 local prompt
 local loadedAt, knownGuide, pending
+local wasRoute = false      -- the guide before this one was the route guide
 
 local function GuideKey(guide)
     if type(guide) ~= "table" or guide.empty then return "none" end
@@ -1627,7 +2365,10 @@ ns.RegisterPart("missing prerequisites prompt", function(rxp)
     end
     if key ~= knownGuide then
         knownGuide = key
-        pending = key ~= "none" and {key = key, since = now} or nil
+        -- Not for the route guide, which is the answer to that question, nor on the way back from it.
+        local route = ns.IsRouteGuide and (ns.IsRouteGuide(guide) or wasRoute)
+        wasRoute = ns.IsRouteGuide and ns.IsRouteGuide(guide) or false
+        pending = key ~= "none" and not route and {key = key, since = now} or nil
         if prompt then prompt:Hide() end
     end
     if not pending then return end

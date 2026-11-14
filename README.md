@@ -20,6 +20,9 @@ Requires the RestedXP Guides addon. This is an independent addon and is not made
 
 - Picking a guide that has missing prerequisites asks whether you want to review them.
 - Steps RestedXP would skip for a missing prerequisite stay in the guide with a red line naming the missing quest: tick it off to skip the step.
+- Route planner: tick quests in Missing Prerequisites and use Generate route. The trip with flights, ships, zeppelins, your hearthstone and a mage's teleports becomes a RestedXP guide of its own, and RestedXP returns to your guide after it.
+- With the DungeonJournal addon: the same Generate route button on its quest list, for one trip that picks up a dungeon's quests and ends at the entrance.
+- Tag spell: pick one of your spells, and RestedXP's target macro also casts it on the mob of the current step.
 
 ![Missing Prerequisites window](media/missing-prerequisites.png)
 

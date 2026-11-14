@@ -1,5 +1,32 @@
 # Changelog
 
+## v1.4.0
+
+This version adds two files: restart the game after updating, `/reload` is not enough.
+
+- New option "Tag spell in the target macro": pick one of your spells, and RestedXP's target macro (RXPTargeting) also casts it, so one key press targets the mob of the current step and tags it. The line is kept through every step; in a fight it is added afterwards.
+- Route planner in Missing Prerequisites: tick quests in the list (kept per character), then use Generate route.
+  - Hover: travel time and the XP of the detour (handed in on the way, and opened up in the guide).
+  - Click: the route becomes a RestedXP guide of its own; RestedXP returns to your guide after it.
+  - Right-click: shows the route in the window; click a stop for a TomTom waypoint.
+  - While the route guide runs, Missing Prerequisites still lists your own guide's quests.
+  - Flight steps point the arrow at the flight master; a waypoint set by clicking a stop is removed when the guide is made.
+  - The route guide reroutes itself: it is planned again from where you are when you leave the way, change zone, land, use your hearthstone, take or hand in a quest, or learn a flight point.
+  - It keeps the order of the stops unless a new order saves more than a minute and a tenth of the trip, and is only loaded anew when the steps ahead change. Option "Reroute the route guide".
+  - Starts with the stop nearest in travel time from where you are.
+  - Knows your flight points (RestedXP's flight times), ships, zeppelins, skycutters and the tram, including Forever's new routes, your hearthstone (once) and a mage's teleports.
+  - A ship or zeppelin counts 3 minutes (1 caught, 5 missed). On foot: straight lines inside a zone, through the passes between zones.
+- With the DungeonJournal addon: a Generate route button on its quest list.
+  - One trip that picks up the dungeon's quests, with the quests to do first, and ends at the entrance.
+  - Hover: travel time, XP, the stops and what was left out. Click: the trip as a RestedXP guide.
+  - Only there when DungeonJournal is installed. Option "Generate route in DungeonJournal".
+- Other addons can use the route planner (`RXPBlizzStyleAPI`).
+- `/rxpstyle report` has a "Map pins" section: RestedXP's pin settings, the waypoints of the next steps, and the pins on the map and minimap.
+- Missing Prerequisites groups its list by where each quest's trip begins: the town or landmark when the first quest to pick up starts at one (Goldshire, Booty Bay), else the zone. Quests that start from an item have their own group.
+- Missing Prerequisites now lists a quest the guide still works on or hands in when you are already past the step that picks it up and do not have it. Before, a click on its red line opened the window without an entry for it.
+- A quest that starts from an item you do not have (like Crystal in the Mountains from the Pendant of Myzrael) no longer says "You can pick it up now": the tooltip and the window name the item and where it comes from.
+- A click on a red quest line whose quest has no entry in Missing Prerequisites says so in chat instead of showing another quest.
+
 ## v1.3.2
 
 - Fixed an error right after login ("attempt to index field 'currentGuide'"): the addon asked RestedXP to check the steps before RestedXP had loaded a guide.

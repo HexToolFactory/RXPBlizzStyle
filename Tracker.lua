@@ -254,6 +254,9 @@ local function AddMissingLines(row)
         if #hint.before > 6 then GameTooltip:AddLine(("... and %d more"):format(#hint.before - 6), 0.9, 0.9, 0.9) end
     elseif hint.status == "level" then
         GameTooltip:AddLine(("Needs level %d to pick it up."):format(hint.requiredLevel), 1, 0.5, 0.25)
+    elseif hint.status == "item" then
+        GameTooltip:AddLine(("You need the item %s to start it."):format(hint.startItem), 1, 0.5, 0.25, true)
+        if hint.startItemSource then GameTooltip:AddLine(("%s %s."):format(hint.startItem, hint.startItemSource), 0.9, 0.9, 0.9, true) end
     elseif hint.status == "available" then
         GameTooltip:AddLine("You can pick it up now.", 0.25, 1, 0.25)
     end
@@ -2162,4 +2165,121 @@ end, function()
     end
     Rebind(wrappers, originals)
     for step in pairs(held) do held[step] = nil end
+end)
+
+--------------------------------------------------------------------------------------------------
+-- Tag spell. RestedXP keeps a macro (RXPTargeting) that targets the mobs of the current step and rewrites it with
+-- every step. With a spell chosen in the options (tagSpell), a line that casts it on that target is added after
+-- RestedXP has written the macro, so one key press targets and tags. A macro cannot be changed in a fight:
+-- the line is added once the fight is over.
+
+local TAG_PREFIX = "/cast [harm,nodead] "
+local MACRO_LIMIT = 255     -- characters a macro can hold
+
+-- A value the game hands out freely, or nil (in a fight some come as secrets).
+local function Readable(value)
+    if issecretvalue and issecretvalue(value) then return end
+    return value
+end
+
+-- The choices for the option: {{"", "None"}, {name, name}, ...}, the player's active spells by name. The spell
+-- chosen stays on the list when the spellbook cannot be read.
+function ns.TagSpellChoices()
+    local names, seen = {}, {}
+    local function add(name)
+        if type(name) == "string" and name ~= "" and not seen[name] then
+            seen[name] = true
+            names[#names + 1] = name
+        end
+    end
+    local book = C_SpellBook
+    if book and book.GetNumSpellBookSkillLines and book.GetSpellBookSkillLineInfo and book.GetSpellBookItemInfo then
+        local bank = Enum and Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player or 0
+        local spellType = Enum and Enum.SpellBookItemType and Enum.SpellBookItemType.Spell
+        local ok, lines = pcall(book.GetNumSpellBookSkillLines)
+        for line = 1, ok and tonumber(Readable(lines)) or 0 do
+            local found, info = pcall(book.GetSpellBookSkillLineInfo, line)
+            local offset = found and type(info) == "table" and tonumber(Readable(info.itemIndexOffset))
+            local count = found and type(info) == "table" and tonumber(Readable(info.numSpellBookItems))
+            for slot = (offset or 0) + 1, (offset or 0) + (offset and count or 0) do
+                local got, spell = pcall(book.GetSpellBookItemInfo, slot, bank)
+                if got and type(spell) == "table" and not Readable(spell.isPassive)
+                    and (not spellType or Readable(spell.itemType) == spellType) then
+                    add(Readable(spell.name))
+                end
+            end
+        end
+    end
+    add(ns.db and ns.db.tagSpell)
+    table.sort(names)
+    local choices = {{"", "None"}}
+    for _, name in ipairs(names) do choices[#choices + 1] = {name, name} end
+    return choices
+end
+
+-- A macro's text with the tag line for a spell (nil or "": without one). Only a macro that targets something
+-- gets the line. Too long, it loses target lines from the top, as RestedXP does itself; one always stays.
+function ns.MacroWithTagLine(body, spell)
+    local lines, targets = {}, 0
+    for line in body:gmatch("[^\n]+") do
+        if line:sub(1, #TAG_PREFIX) ~= TAG_PREFIX then
+            lines[#lines + 1] = line
+            if line:find("^/targetexact ") then targets = targets + 1 end
+        end
+    end
+    if spell and spell ~= "" and targets > 0 then lines[#lines + 1] = TAG_PREFIX .. spell end
+    local text = table.concat(lines, "\n")
+    while #text > MACRO_LIMIT and targets > 1 do
+        for index, line in ipairs(lines) do
+            if line:find("^/targetexact ") then
+                table.remove(lines, index)
+                targets = targets - 1
+                break
+            end
+        end
+        text = table.concat(lines, "\n")
+    end
+    if #text > MACRO_LIMIT then return end
+    return text
+end
+
+-- Brings RestedXP's target macro up to date with the chosen spell; false when that cannot be done now.
+local function ApplyTagSpell(rxp)
+    if InCombatLockdown() then return false end
+    local name = type(rxp.targeting) == "table" and rxp.targeting.macroName
+    if type(name) ~= "string" or not GetMacroInfo or not EditMacro then return false end
+    local _, _, body = GetMacroInfo(name)
+    if type(body) ~= "string" then return false end
+    local text = ns.MacroWithTagLine(body, ns.db.tagSpell)
+    if text and text ~= body then EditMacro(name, name, nil, text) end
+    return true
+end
+
+local tagging
+ns.RegisterPart("tag spell in the target macro", function(rxp)
+    if not tagging then
+        assert(type(rxp.targeting) == "table" and type(rxp.targeting.UpdateMacro) == "function", "RestedXP has no target macro")
+        local original = rxp.targeting.UpdateMacro
+        local function wrapper(self, ...)
+            local first, second = original(self, ...)
+            -- RestedXP has just written the macro anew, without the line.
+            if tagging then tagging.applied = nil end
+            pcall(ApplyTagSpell, rxp)
+            return first, second
+        end
+        tagging = {original = original, wrapper = wrapper}
+        rxp.targeting.UpdateMacro = wrapper
+    end
+    -- A new choice, or a fight that kept the macro from being changed.
+    local wanted = ns.db.tagSpell or ""
+    if tagging.applied ~= wanted then
+        local ok, done = pcall(ApplyTagSpell, rxp)
+        if ok and done then tagging.applied = wanted end
+    end
+end, function()
+    local rxp = ns.GetRXP()
+    if rxp and tagging and type(rxp.targeting) == "table" and rxp.targeting.UpdateMacro == tagging.wrapper then
+        rxp.targeting.UpdateMacro = tagging.original
+    end
+    tagging = nil
 end)

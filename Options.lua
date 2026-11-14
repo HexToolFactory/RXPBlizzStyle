@@ -34,6 +34,19 @@ local OPTIONS = {
         name = "Keep steps with missing prerequisites",
         tooltip = "RestedXP skips a step on its own when its quest is not in your quest log or a quest before it is not done (\"Step skipped: Missing pre-requisites\"). With this on, the step stays, with a red line saying what is missing: click the line to see the quest in Missing Prerequisites, tick it off to skip the step.",
     }, {
+        key = "reroute",
+        name = "Reroute the route guide",
+        tooltip = "A route guide made with Generate route is planned again from where you are when you leave the way, change zone, land, use your hearthstone or take a quest. It is only loaded anew when the steps ahead change.",
+    }, {
+        key = "dungeonRoute",
+        name = "Generate route in DungeonJournal",
+        tooltip = "With the DungeonJournal addon: a Generate route button on its quest list. One trip that picks up the dungeon's quests, with the quests to do first, and ends at the entrance, as a RestedXP guide of its own.",
+    }, {
+        key = "tagSpell",
+        name = "Tag spell in the target macro",
+        tooltip = "Adds a line that casts this spell to RestedXP's target macro (RXPTargeting), so one key press targets the mob of the current step and tags it. Pick an instant spell. The macro cannot be changed during a fight: the line is added after it.",
+        values = function() return ns.TagSpellChoices and ns.TagSpellChoices() or {{"", "None"}} end,
+    }, {
         key = "upcoming",
         name = "Upcoming steps",
         tooltip = "How many of the next steps are listed below the current step. Scroll over the list to look further ahead.",
@@ -94,7 +107,9 @@ local function AddControl(category, option)
     elseif option.values then
         local function Values()
             local container = Settings.CreateControlTextContainer()
-            for _, value in ipairs(option.values) do container:Add(value[1], value[2]) end
+            -- A list, or a function for one that is only known in the game (the player's spells).
+            local values = type(option.values) == "function" and option.values() or option.values
+            for _, value in ipairs(values) do container:Add(value[1], value[2]) end
             return container:GetData()
         end
         local create = Settings.CreateDropdown or Settings.CreateDropDown
@@ -173,7 +188,13 @@ local function AddRestedXPTab(rxp)
             step = option.max and (option.step or 1) or nil,
             isPercent = option.percent,
         }
-        if option.values then
+        if type(option.values) == "function" then
+            tab.args[option.key].values = function()
+                local values = {}
+                for _, value in ipairs(option.values()) do values[value[1]] = value[2] end
+                return values
+            end
+        elseif option.values then
             local values = {}
             for _, value in ipairs(option.values) do values[value[1]] = value[2] end
             tab.args[option.key].values = values

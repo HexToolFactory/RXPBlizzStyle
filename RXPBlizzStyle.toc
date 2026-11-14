@@ -6,7 +6,7 @@
 ## X-Curse-Project-ID: 1784720
 ## Category: Quests
 ## Dependencies: RXPGuides
-## OptionalDeps: TomTom
+## OptionalDeps: TomTom, ForeverDungeonJournal
 ## SavedVariables: RXPBlizzStyleDB
 
 Core.lua
@@ -15,3 +15,5 @@ Arrow.lua
 Options.lua
 PrereqFixes.lua
 Prereqs.lua
+Route.lua
+DungeonJournal.lua
