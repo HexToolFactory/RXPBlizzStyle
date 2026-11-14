@@ -65,32 +65,55 @@ local LEFT_OUT = {
 }
 local LEFT_OUT_ORDER = {"done", "log", "inside", "item", "level", "notforyou", "noplace", "unknown"}
 
--- The trip for the dungeon shown: {dungeon, entries, route, left = {reason = count}}, or nil and why not.
+-- Quests left out that the run still brings experience for; the others (done, level too low, ...) bring none.
+local STILL_COUNTS = {log = true, inside = true, item = true, noplace = true}
+
+-- The trip for the dungeon shown: {dungeon, entries, route, left = {reason = count}, quests = the dungeon's open
+-- quests in the journal's order, {{id, name, xp, why = why it is not on the route}, ...}, questXp = their
+-- experience}, or nil and why not.
 local function Build()
     local api = Planner()
     if not api then return nil, "The route planner is not loaded." end
     local name, data = Dungeon()
     if not name then return nil, "DungeonJournal shows no dungeon." end
-    local entries, skipped = api.QuestEntries(QuestIds(data))
+    local ids = QuestIds(data)
+    local entries, skipped = api.QuestEntries(ids)
     if not entries then return nil, tostring(skipped) end
-    local left = {}
-    local function leave(why) left[why] = (left[why] or 0) + 1 end
-    for _, skip in ipairs(skipped or {}) do leave(skip.why) end
+    local left, rows = {}, {}
+    local function leave(why, id, questName, xp)
+        left[why] = (left[why] or 0) + 1
+        if STILL_COUNTS[why] then rows[id] = {id = id, name = questName, xp = xp, why = why} end
+    end
+    local titles = {}
+    for _, quest in ipairs(data.quests) do
+        if type(quest) == "table" and quest.id then titles[quest.id] = quest.name end
+    end
+    for _, skip in ipairs(skipped or {}) do
+        leave(skip.why, skip.id, titles[skip.id] or ("Quest " .. skip.id), STILL_COUNTS[skip.why] and api.QuestXp and api.QuestXp(skip.id) or nil)
+    end
     local kept = {}
     for _, entry in ipairs(entries) do
         if entry.status == "item" then
-            leave("item")       -- nothing to pick up before the run
+            leave("item", entry.id, entry.name, entry.xp)       -- nothing to pick up before the run
         elseif entry.status == "level" then
             leave("level")
         elseif not (entry.mapId and entry.x and entry.y) then
-            leave("noplace")
+            leave("noplace", entry.id, entry.name, entry.xp)
         elseif not Outdoors(entry.mapId) then
-            leave("inside")
+            leave("inside", entry.id, entry.name, entry.xp)
         else
             kept[#kept + 1] = entry
+            rows[entry.id] = {id = entry.id, name = entry.name, xp = entry.xp}
         end
     end
-    local trip = {dungeon = name, entries = kept, left = left}
+    local quests, questXp = {}, 0
+    for _, id in ipairs(ids) do
+        if rows[id] then
+            quests[#quests + 1] = rows[id]
+            questXp = questXp + (rows[id].xp or 0)
+        end
+    end
+    local trip = {dungeon = name, entries = kept, left = left, quests = quests, questXp = questXp}
     if #kept == 0 then return trip end
     local entrance = data.entrance
     local finish
@@ -122,21 +145,25 @@ local function Button_OnEnter(button)
     end
     local api = Planner()
     local leftOut = LeftOutText(trip.left)
+    local questsLine = ("XP of the dungeon quests (%d)"):format(#trip.quests)
     if not trip.route then
         GameTooltip:AddLine(trip.dungeon, 1, 0.82, 0)
         GameTooltip:AddLine("Nothing to pick up before the run.", 0.9, 0.9, 0.9, true)
+        if #trip.quests > 0 then
+            GameTooltip:AddDoubleLine(questsLine, api.FormatXp(trip.questXp), 0.9, 0.9, 0.9, 0.55, 0.75, 1)
+        end
         if leftOut then GameTooltip:AddLine(leftOut, 0.6, 0.6, 0.6, true) end
         GameTooltip:Show()
         return
     end
     local route, entries = trip.route, trip.entries
     GameTooltip:AddLine(("%s: route for %d quest%s"):format(trip.dungeon, #entries, #entries == 1 and "" or "s"), 1, 0.82, 0)
-    local dungeonXp = api.UnlockedXp(entries)
     GameTooltip:AddDoubleLine("Travel", "about " .. api.Duration(route.seconds), 0.9, 0.9, 0.9, 1, 1, 1)
     GameTooltip:AddDoubleLine(("XP on the way (%d hand-in%s)"):format(route.handins, route.handins == 1 and "" or "s"),
         api.FormatXp(route.xp), 0.9, 0.9, 0.9, 0.55, 0.75, 1)
-    GameTooltip:AddDoubleLine("XP of the dungeon quests", api.FormatXp(dungeonXp), 0.9, 0.9, 0.9, 0.55, 0.75, 1)
-    GameTooltip:AddDoubleLine("Total", api.FormatXp(route.xp + dungeonXp), 1, 0.82, 0, 0.55, 0.75, 1)
+    -- Every open quest of the dungeon counts, also one the route does not pick up (it starts inside, or is in the log).
+    GameTooltip:AddDoubleLine(questsLine, api.FormatXp(trip.questXp), 0.9, 0.9, 0.9, 0.55, 0.75, 1)
+    GameTooltip:AddDoubleLine("Total", api.FormatXp(route.xp + trip.questXp), 1, 0.82, 0, 0.55, 0.75, 1)
     -- What the planner has to say beyond stops, time and experience (rides, hearthstone, notes).
     local lines = api.Summary(route, entries)
     for i = 3, #lines do GameTooltip:AddLine(lines[i], 0.8, 0.8, 0.8, true) end

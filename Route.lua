@@ -982,6 +982,29 @@ local function Clean(text)
     return (tostring(text):gsub("[\r\n]+", " "):gsub("%-%-+", "-"):gsub(">>", ""):gsub("<<", ""))
 end
 
+-- A line that puts NPCs into RestedXP's target macro: tag "target" for who to talk to, "mob" for what to kill;
+-- list = {{id, name}, ...}. Each goes in as name::id, which RestedXP takes as the name in English and looks up by
+-- the id in other languages. Its macro holds about 230 characters, so a step names MAX_MOBS at most.
+local MAX_MOBS = 8
+local function Units(tag, list)
+    local parts = {}
+    for _, unit in ipairs(list) do
+        if #parts < MAX_MOBS and type(unit.id) == "number" and type(unit.name) == "string" and unit.name ~= "" then
+            parts[#parts + 1] = ("%s::%d"):format(Clean(unit.name):gsub(";", " "), unit.id)
+        end
+    end
+    return #parts > 0 and ("." .. tag .. " " .. table.concat(parts, ";")) or nil
+end
+
+-- The NPCs of a quest's objectives for the stop's step: those of the map the stop is on, else all of them.
+local function StopMobs(stop)
+    local all, here = stop.info.objectiveMobs or {}, {}
+    for _, mob in ipairs(all) do
+        if stop.mapId and type(mob.maps) == "table" and mob.maps[stop.mapId] then here[#here + 1] = mob end
+    end
+    return #here > 0 and here or all
+end
+
 -- "Booty Bay, Stranglethorn" is Booty Bay: what a .fly line takes, and no comma in it.
 local function Town(name)
     return Clean(tostring(name):match("^%s*([^,]+)") or name)
@@ -1024,7 +1047,7 @@ function ns.RouteGuideText(route, back, title)
         if stop.kind == "finish" then
             step(spot({stop.mapId, stop.x, stop.y}, 30, "Go to " .. name))
         elseif stop.kind == "pickup" then
-            step(place, (".accept %d >> Accept %s"):format(id, name))
+            step(place, (".accept %d >> Accept %s"):format(id, name), Units("target", {{id = info.starterNpc, name = info.starter}}))
         elseif stop.kind == "item" then
             local item = Clean(info.startItem or "the item")
             if info.startItemId then
@@ -1038,9 +1061,10 @@ function ns.RouteGuideText(route, back, title)
             for index = 1, math.max(info.objectiveCount or 1, 1) do
                 objectives[#objectives + 1] = (".complete %d,%d"):format(id, index)
             end
+            objectives[#objectives + 1] = Units("mob", StopMobs(stop))
             step(unpack(objectives))
         else
-            step(place, (".turnin %d >> Turn in %s"):format(id, name))
+            step(place, (".turnin %d >> Turn in %s"):format(id, name), Units("target", {{id = info.enderNpc, name = info.ender}}))
         end
     end
     return table.concat(lines, "\n") .. "\n"
@@ -1296,6 +1320,7 @@ _G.RXPBlizzStyleAPI = {
     end,
     Summary = function(route, entries) return ns.RouteSummary(route, entries) end,
     UnlockedXp = function(entries) return ns.RouteUnlockedXp(entries) end,
+    QuestXp = function(id) return ns.QuestXp(id) end,       -- a quest's experience at the player's level, or nil
     StopText = function(stop) return ns.RouteStopText(stop) end,
     LegText = function(leg) return ns.RouteLegText(leg) end,
     Duration = function(seconds) return ns.RouteDuration(seconds) end,
