@@ -203,7 +203,7 @@ local function ZoneName(areaId)
 end
 
 -- The first NPC or object of Questie's startedBy / finishedBy that it knows, and where it is: name, zone name,
--- uiMapId, x, y (0-100).
+-- uiMapId, x, y (0-100), and its NPC id when it is an NPC (for RestedXP's target macro).
 local function Placed(db, by)
     local sources = {{by[1], "QueryNPCSingle"}, {by[2], "QueryObjectSingle"}}
     for _, source in ipairs(sources) do
@@ -211,17 +211,18 @@ local function Placed(db, by)
             for _, starterId in ipairs(source[1]) do
                 local name = Query(db, source[2], starterId, "name")
                 if name then
+                    local npc = source[2] == "QueryNPCSingle" and starterId or nil
                     local spawns = Query(db, source[2], starterId, "spawns")
                     if type(spawns) == "table" then
                         for areaId, points in pairs(spawns) do
                             local point = type(points) == "table" and points[1]
                             if type(point) == "table" and (point[1] or -1) >= 0 then
                                 local zone, mapId = ZoneName(areaId)
-                                return name, zone, mapId, point[1], point[2]
+                                return name, zone, mapId, point[1], point[2], npc
                             end
                         end
                     end
-                    return name
+                    return name, nil, nil, nil, nil, npc
                 end
             end
         end
@@ -234,8 +235,8 @@ local function Starter(db, id)
     if fix and fix.starter then return fix.starter, fix.zone, fix.mapId, fix.x, fix.y end
     local startedBy = QuestValue(db, id, "startedBy")
     if type(startedBy) ~= "table" then return end
-    local name, zone, mapId, x, y = Placed(db, startedBy)
-    if name then return name, zone, mapId, x, y end
+    local name, zone, mapId, x, y, npc = Placed(db, startedBy)
+    if name then return name, zone, mapId, x, y, npc end
     if type(startedBy[3]) == "table" and startedBy[3][1] then
         local item = Query(db, "QueryItemSingle", startedBy[3][1], "name")
         if item then return "Item: " .. item end
@@ -330,10 +331,25 @@ local function ObjectiveText(db, id)
 end
 
 -- Where the objectives are done: places as in AddPoints, and the names of what is killed, used or collected.
--- Items count where the NPCs and objects that drop them are.
+-- Items count where the NPCs and objects that drop them are. Last: the NPCs of it, {{id, name, maps = {[uiMapId] =
+-- true}}, ...}, for RestedXP's target macro.
 local function Objectives(db, id)
     local places, names, seen = {}, {}, {}
     local count = 0
+    local mobs, mobSeen = {}, {}
+    local function Mob(npcId)
+        if type(npcId) ~= "number" or mobSeen[npcId] then return end
+        mobSeen[npcId] = true
+        local name = Query(db, "QueryNPCSingle", npcId, "name")
+        if type(name) ~= "string" or name == "" then return end
+        local maps = {}
+        local spawns = Query(db, "QueryNPCSingle", npcId, "spawns")
+        for areaId in pairs(type(spawns) == "table" and spawns or {}) do
+            local _, mapId = ZoneName(areaId)
+            if mapId then maps[mapId] = true end
+        end
+        mobs[#mobs + 1] = {id = npcId, name = name, maps = maps}
+    end
     local function Named(name)
         if type(name) == "string" and name ~= "" and not seen[name] then
             seen[name] = true
@@ -347,6 +363,7 @@ local function Objectives(db, id)
             if type(o) == "table" then
                 count = count + 1
                 AddSpawns(db, "QueryNPCSingle", {o[1]}, Named(o[2] or Query(db, "QueryNPCSingle", o[1], "name")), places)
+                Mob(o[1])
             end
         end
         for _, o in ipairs(type(objectives[2]) == "table" and objectives[2] or {}) do
@@ -359,7 +376,9 @@ local function Objectives(db, id)
             if type(o) == "table" then
                 count = count + 1
                 local name = Named(o[2] or Query(db, "QueryItemSingle", o[1], "name"))
-                AddSpawns(db, "QueryNPCSingle", Query(db, "QueryItemSingle", o[1], "npcDrops"), name, places)
+                local droppers = Query(db, "QueryItemSingle", o[1], "npcDrops")
+                AddSpawns(db, "QueryNPCSingle", droppers, name, places)
+                for _, npcId in ipairs(type(droppers) == "table" and droppers or {}) do Mob(npcId) end
                 AddSpawns(db, "QueryObjectSingle", Query(db, "QueryItemSingle", o[1], "objectDrops"), name, places)
             end
         end
@@ -367,6 +386,7 @@ local function Objectives(db, id)
             if type(o) == "table" then
                 count = count + 1
                 AddSpawns(db, "QueryNPCSingle", o[1], Named(o[3] or Query(db, "QueryNPCSingle", o[2], "name")), places)
+                for _, npcId in ipairs(type(o[1]) == "table" and o[1] or {}) do Mob(npcId) end
             end
         end
     end
@@ -383,7 +403,7 @@ local function Objectives(db, id)
             if type(o) == "table" and o[1] == source then given = true end
         end
     end
-    return places, names, given, count
+    return places, names, given, count, mobs
 end
 
 -- Who the quest is handed in to and where, like Starter.
@@ -395,12 +415,33 @@ local function Ender(db, id)
     return Placed(db, finishedBy)
 end
 
--- The quest's experience at the player's level, as Questie's map tooltips show it; nil when unknown or none.
-local function QuestXp(id)
-    local module = Questie("QuestXP")
-    if not (module and module.GetQuestLogRewardXP) then return end
-    local ok, xp = pcall(module.GetQuestLogRewardXP, module, id, false)
-    return ok and type(xp) == "number" and xp > 0 and xp or nil
+-- The quest's experience at the player's level; nil when unknown or none. Forever pays more than Classic for many
+-- old quests (Maraudon's: about twice), and Questie's table holds Classic's amounts for those. So the game's own
+-- number comes first, then the DungeonJournal addon's table of Forever amounts when that addon is there, and
+-- Questie's number last. The game knows a quest outside the log only once its data is loaded: that is asked for
+-- here, once per quest, and used from the next look on.
+local QuestXp
+do
+    local asked = {}
+    function QuestXp(id)
+        if type(id) ~= "number" then return end
+        if type(GetQuestLogRewardXP) == "function" then
+            local ok, xp = pcall(GetQuestLogRewardXP, id)
+            if ok and not (issecretvalue and issecretvalue(xp)) and type(xp) == "number" and xp > 0 then return xp end
+        end
+        if not asked[id] and C_QuestLog and type(C_QuestLog.RequestLoadQuestByID) == "function" then
+            asked[id] = true
+            pcall(C_QuestLog.RequestLoadQuestByID, id)
+        end
+        local journal = _G.ForeverDungeonJournal_NS
+        local stored = type(journal) == "table" and type(journal.FOREVER_QUEST_XP_FALLBACK) == "table"
+            and journal.FOREVER_QUEST_XP_FALLBACK[id]
+        if type(stored) == "number" and stored > 0 then return stored end
+        local module = Questie("QuestXP")
+        if not (module and module.GetQuestLogRewardXP) then return end
+        local ok, xp = pcall(module.GetQuestLogRewardXP, module, id, false)
+        return ok and type(xp) == "number" and xp > 0 and xp or nil
+    end
 end
 
 -- The place a quest is picked up at, for the groups of the list: a town or other landmark when the quest starts
@@ -548,11 +589,11 @@ local function QuestInfo(db, player, covered, id)
         level = type(level) == "number" and level > 0 and level or nil,
         requiredLevel = type(required) == "number" and required or nil,
     }
-    info.starter, info.zone, info.mapId, info.x, info.y = Starter(db, id)
+    info.starter, info.zone, info.mapId, info.x, info.y, info.starterNpc = Starter(db, id)
     info.fromItem = type(info.starter) == "string" and info.starter:find("^Item: ") ~= nil or nil
-    info.ender, info.endZone, info.endMapId, info.endX, info.endY = Ender(db, id)
+    info.ender, info.endZone, info.endMapId, info.endX, info.endY, info.enderNpc = Ender(db, id)
     info.objective = ObjectiveText(db, id)
-    info.objectivePlaces, info.objectiveNames, info.objectiveGiven, info.objectiveCount = Objectives(db, id)
+    info.objectivePlaces, info.objectiveNames, info.objectiveGiven, info.objectiveCount, info.objectiveMobs = Objectives(db, id)
     info.xp = QuestXp(id)
     -- The quests still to be done before it (for the route planner: it waits for them).
     info.needs = Requirements(db, player, covered, id)
@@ -1440,6 +1481,7 @@ end
 
 ns.RouteSummary, ns.RouteDuration, ns.FormatXp = RouteSummary, Duration, FormatXp
 ns.RouteStopText, ns.RouteLegText, ns.RouteUnlockedXp = StopText, LegText, UnlockedXp
+ns.QuestXp = QuestXp
 
 local function SelectedEntries()
     local entries = {}

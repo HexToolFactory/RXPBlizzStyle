@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.4.1
+
+- Fix: quest XP was too low for old quests that Forever pays more for (Maraudon's: about half). The game's own number is used first, then the DungeonJournal addon's Forever amounts, then Questie's.
+- Route guide: its steps fill RestedXP's target macro.
+  - Objective steps: the mobs to kill, and the mobs that drop a quest item.
+  - Pick up and hand in steps: the NPC to talk to.
+  - With the "Tag spell" option, the macro tags them too.
+- Generate route in DungeonJournal: "XP of the dungeon quests" counts every open quest of the dungeon, also those picked up inside or already in your log.
+
 ## v1.4.0
 
 This version adds two files: restart the game after updating, `/reload` is not enough.
