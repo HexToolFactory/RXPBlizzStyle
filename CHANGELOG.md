@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.4.2
+
+- Fix: Generate route in DungeonJournal covered its Track button. Track now sits to the right of it.
+
 ## v1.4.1
 
 - Fix: quest XP was too low for old quests that Forever pays more for (Maraudon's: about half). The game's own number is used first, then the DungeonJournal addon's Forever amounts, then Questie's.

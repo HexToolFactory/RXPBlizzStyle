@@ -196,6 +196,17 @@ local function Button_OnClick()
         type(back) == "table" and back.name and (" RestedXP returns to %s after it."):format(back.name) or ""))
 end
 
+-- DungeonJournal's own Track button sits in the same row. DungeonJournal puts it right of the frame in its
+-- questRouteButton field when that one shows, else in the first place: so the button goes there, and the row is
+-- laid out again whenever it shows or hides.
+local function PlaceTrackButton()
+    local journal = _G.ForeverDungeonJournal_NS
+    local track = _G.ForeverDungeonJournalFrame and _G.ForeverDungeonJournalFrame.questTrackButton
+    if type(journal) == "table" and type(journal.UpdateQuestTrackButton) == "function" and track and track.dungeon then
+        pcall(journal.UpdateQuestTrackButton, track.dungeon)
+    end
+end
+
 -- The button, under the "QUESTS" title of the journal's quest list; true once it is there (or never will be).
 local button
 local function Attach()
@@ -205,8 +216,11 @@ local function Attach()
     local panel = type(journal) == "table" and journal.questLeftPanel
     if not panel then return false end
     button = CreateFrame("Button", "RXPBlizzStyleDungeonRouteButton", panel, "UIPanelButtonTemplate")
-    button:SetSize(120, 20)
-    button:SetPoint("TOPLEFT", 10, -32)
+    button:SetSize(120, 22)
+    button:SetPoint("TOPLEFT", 10, -30)
+    if journal.questRouteButton == nil then journal.questRouteButton = button end
+    button:HookScript("OnShow", PlaceTrackButton)
+    button:HookScript("OnHide", PlaceTrackButton)
     button:SetText("Generate route")
     button:SetScript("OnEnter", Button_OnEnter)
     button:SetScript("OnLeave", function(self)
@@ -214,6 +228,7 @@ local function Attach()
     end)
     button:SetScript("OnClick", Button_OnClick)
     button:SetShown(ns.db.dungeonRoute ~= false)
+    PlaceTrackButton()
     return true
 end
 
