@@ -17,3 +17,4 @@ PrereqFixes.lua
 Prereqs.lua
 Route.lua
 DungeonJournal.lua
+GroupQuests.lua

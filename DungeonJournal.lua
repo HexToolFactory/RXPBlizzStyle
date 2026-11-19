@@ -62,8 +62,33 @@ end
 local LEFT_OUT = {
     done = "done", log = "in your log", notforyou = "not for you", unknown = "not in Questie's database",
     inside = "starts inside", item = "starts from an item", level = "level too low", noplace = "no known place",
+    before = "an earlier quest inside",
 }
-local LEFT_OUT_ORDER = {"done", "log", "inside", "item", "level", "notforyou", "noplace", "unknown"}
+local LEFT_OUT_ORDER = {"done", "log", "inside", "before", "item", "level", "notforyou", "noplace", "unknown"}
+
+local function Outside(mapId, x, y)
+    return mapId and x and y and Outdoors(mapId) and true or false
+end
+
+-- Whether a quest to do before the entry's quest (its chain) has a step inside a dungeon or nowhere known: then the
+-- quest cannot be readied before the run (Maxwell's Mission waits for Bijou's Belongings, inside Blackrock Spire).
+local function NeedsInside(entry)
+    for _, info in ipairs(type(entry.chain) == "table" and entry.chain or {}) do
+        if type(info) == "table" and info.id ~= entry.id then
+            if info.status ~= "log" and info.status ~= "item" and not Outside(info.mapId, info.x, info.y) then return true end
+            if not Outside(info.endMapId, info.endX, info.endY) then return true end
+            local places, anywhere, outdoors = info.objectivePlaces, false, false
+            for mapId, spots in pairs(type(places) == "table" and places or {}) do
+                if type(spots) == "table" and #spots > 0 then
+                    anywhere = true
+                    if Outdoors(mapId) then outdoors = true end
+                end
+            end
+            if anywhere and not outdoors and not info.objectiveGiven then return true end
+        end
+    end
+    return false
+end
 
 -- Quests left out that the run still brings experience for; the others (done, level too low, ...) bring none.
 local STILL_COUNTS = {log = true, inside = true, item = true, noplace = true}
@@ -101,6 +126,8 @@ local function Build()
             leave("noplace", entry.id, entry.name, entry.xp)
         elseif not Outdoors(entry.mapId) then
             leave("inside", entry.id, entry.name, entry.xp)
+        elseif NeedsInside(entry) then
+            leave("before")
         else
             kept[#kept + 1] = entry
             rows[entry.id] = {id = entry.id, name = entry.name, xp = entry.xp}

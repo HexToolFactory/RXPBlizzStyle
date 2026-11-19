@@ -2327,6 +2327,27 @@ function ns.QuestForMe(id)
     return IsForMe(db, player, id) and true or false
 end
 
+-- Where this character stands with a quest, for group members who ask (GroupQuests.lua): "done", "ready" (in the
+-- log, objectives done), "log", "level" (and the level it needs), "notforyou" (class or race), "locked" (and how
+-- many quests are still to do before it) or "available". The quest log and the game's completed flags come first;
+-- Questie's database only adds what the game does not say (level, class, race, quests before it).
+function ns.QuestStatus(id)
+    if type(id) ~= "number" or id <= 0 then return "available" end
+    local db, player = Questie("QuestieDB"), Questie("QuestiePlayer")
+    if IsDone(id) then return "done" end
+    if IsInLog(id, player) then
+        local ok, complete = pcall(function() return C_QuestLog and C_QuestLog.IsComplete and C_QuestLog.IsComplete(id) end)
+        return ok and complete and "ready" or "log"
+    end
+    if not (db and db.QueryQuestSingle and IsKnown(db, id)) then return "available" end
+    local level = QuestValue(db, id, "requiredLevel")
+    if type(level) == "number" and level > (UnitLevel("player") or 0) then return "level", level end
+    if not IsForMe(db, player, id) then return "notforyou" end
+    local needs = Requirements(db, player, {}, id)
+    if #needs > 0 then return "locked", #needs end
+    return "available"
+end
+
 --------------------------------------------------------------------------------------------------
 -- Picking a guide that has missing prerequisites asks whether to review them. Only a guide the player picks (or
 -- RestedXP moves on to): the one it restores after logging in or reloading is not asked about again, since the

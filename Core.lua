@@ -23,6 +23,7 @@ ns.defaults = {
     reroute = true,       -- plan the route guide again as the player travels (Route.lua)
     tagSpell = "",        -- a spell cast by RestedXP's target macro, to tag the step's mob ("": none)
     dungeonRoute = true,  -- a Generate route button on the DungeonJournal addon's quest list (DungeonJournal.lua)
+    groupQuests = true,   -- group members' quest states in DungeonJournal's track window tooltips (GroupQuests.lua)
     -- Display
     scale = 1,            -- on top of the quest tracker's own scale
     width = 260,
