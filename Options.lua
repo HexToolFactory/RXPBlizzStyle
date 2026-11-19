@@ -42,6 +42,10 @@ local OPTIONS = {
         name = "Generate route in DungeonJournal",
         tooltip = "With the DungeonJournal addon: a Generate route button on its quest list. One trip that picks up the dungeon's quests, with the quests to do first, and ends at the entrance, as a RestedXP guide of its own.",
     }, {
+        key = "groupQuests",
+        name = "Group in DungeonJournal's tracker",
+        tooltip = "Hovering a quest in DungeonJournal's track window shows each group member: completed, has it, can take it or not eligible. Members with RXPBlizzStyle answer in full; for others Questie, their level and the game's replies when you share a quest are used.",
+    }, {
         key = "tagSpell",
         name = "Tag spell in the target macro",
         tooltip = "Adds a line that casts this spell to RestedXP's target macro (RXPTargeting), so one key press targets the mob of the current step and tags it. Pick an instant spell. The macro cannot be changed during a fight: the line is added after it.",

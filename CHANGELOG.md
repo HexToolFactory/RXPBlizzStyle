@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.5.0
+
+This version adds a file: restart the game after updating, `/reload` is not enough.
+
+- New option "Group in DungeonJournal's tracker": hover a quest or a chain step in DungeonJournal's track window to see each group member's state.
+  - States: completed, has it, can take it, level needed, not eligible, earlier quests missing.
+  - Members with RXPBlizzStyle answer for themselves.
+  - For the others: Questie's shared quest logs, their level and faction.
+  - Sharing a quest also counts: the game's replies (completed, already on it, not eligible) are kept.
+- Fix: Generate route in DungeonJournal started with a step inside the dungeon. Quests that wait for an earlier quest inside (Maxwell's Mission waits for Bijou's Belongings) are now left out.
+- Fix: the route guide went back to step 1 every time it was planned again after you went past steps without doing them.
+
+## v1.4.2
+
+- Fix: Generate route in DungeonJournal covered its Track button. Track now sits to the right of it.
+
 ## v1.4.1
 
 - Fix: quest XP was too low for old quests that Forever pays more for (Maraudon's: about half). The game's own number is used first, then the DungeonJournal addon's Forever amounts, then Questie's.
