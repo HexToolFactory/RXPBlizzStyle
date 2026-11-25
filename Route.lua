@@ -692,6 +692,34 @@ end
 -- what the game's side had to say (env.notes)}.
 function ns.PlanRoute(entries, env)
     local stops = BuildStops(entries, env)
+    -- Stops the player went past in the guide (env.skip = {[key] = true}) stay out, and so do the stops that wait
+    -- for one of them. The end of the trip only waits for what is left.
+    if type(env.skip) == "table" and next(env.skip) then
+        local out = {}
+        local changed = true
+        while changed do
+            changed = false
+            for _, stop in ipairs(stops) do
+                if not out[stop] and stop.kind ~= "finish" then
+                    local drop = env.skip[stop.key]
+                    for _, before in ipairs(stop.after) do drop = drop or out[before] end
+                    if drop then out[stop], changed = true, true end
+                end
+            end
+        end
+        local kept = {}
+        for _, stop in ipairs(stops) do
+            if not out[stop] then
+                local after = {}
+                for _, before in ipairs(stop.after) do
+                    if not out[before] then after[#after + 1] = before end
+                end
+                stop.after = after
+                kept[#kept + 1] = stop
+            end
+        end
+        stops = kept
+    end
     local seconds, length = Planner(env, stops)
     local sequence
     if env.order then
@@ -1011,12 +1039,14 @@ local function Town(name)
 end
 
 -- The guide's text for a planned route; back = {group, name} of the guide to return to (nil: none); title = what
--- RestedXP shows as the guide's name (nil: its own name).
+-- RestedXP shows as the guide's name (nil: its own name). Second value: the key of the stop each step is for.
 function ns.RouteGuideText(route, back, title)
     local lines = {"#forever", "#version 1", "#group " .. ROUTE_GROUP, "#name " .. ROUTE_NAME}
     if title and title ~= "" then lines[#lines + 1] = "#displayname " .. Clean(title) end
     if back and back.group and back.name then lines[#lines + 1] = ("#next %s\\%s"):format(back.group, back.name) end
+    local keys, key = {}, nil
     local function step(...)
+        keys[#keys + 1] = key
         lines[#lines + 1] = "step"
         for i = 1, select("#", ...) do
             local line = select(i, ...)
@@ -1027,6 +1057,7 @@ function ns.RouteGuideText(route, back, title)
         return (".goto %d,%.2f,%.2f%s%s"):format(at[1], at[2], at[3], radius and ("," .. radius) or "", text and (" >> " .. text) or "")
     end
     for _, stop in ipairs(route.stops) do
+        key = stop.key
         for _, part in ipairs(stop.leg and stop.leg.parts or {}) do
             if part.mode == "fly" then
                 -- With the flight master's spot, so that the arrow leads there.
@@ -1067,7 +1098,7 @@ function ns.RouteGuideText(route, back, title)
             step(place, (".turnin %d >> Turn in %s"):format(id, name), Units("target", {{id = info.enderNpc, name = info.ender}}))
         end
     end
-    return table.concat(lines, "\n") .. "\n"
+    return table.concat(lines, "\n") .. "\n", keys
 end
 
 function ns.IsRouteGuide(guide)
@@ -1135,13 +1166,15 @@ function ns.LoadRouteGuide(route, title, source)
             origin = {group = current.group, name = current.name, guide = current}
         end
     end
-    local text = ns.RouteGuideText(route, back, title)
+    local text, keys = ns.RouteGuideText(route, back, title)
     local ok, err = Register(text)
     if not ok then return false, err end
     local guide = rxp.GetGuideTable(ROUTE_GROUP, ROUTE_NAME)
     if not guide then return false, "RestedXP did not take the guide" end
     -- Kept, so that RestedXP finds the guide again after a reload (see the watcher below).
-    if saved then saved[key] = {text = text, back = back, title = title, source = source or route.source, order = route.order} end
+    if saved then
+        saved[key] = {text = text, keys = keys, back = back, title = title, source = source or route.source, order = route.order}
+    end
     rxp:LoadGuide(guide)
     if type(rxp.SetStep) == "function" then pcall(rxp.SetStep, 1) end
     return true, back
@@ -1192,9 +1225,25 @@ function ns.Reroute()
     local kept = saved and saved[CharacterKey()]
     if type(kept) ~= "table" or type(kept.source) ~= "table" or type(kept.text) ~= "string" then return false end
     local entries = SourceEntries(kept.source)
+    local progress = 1
+    if type(rxp.GetGuideProgress) == "function" then
+        local ok, step = pcall(rxp.GetGuideProgress)
+        progress = ok and tonumber(step) or 1
+    end
+    -- The stops of the steps the player went past without doing them (a step skipped, one that cannot be done
+    -- here): planned again they would come first, and the guide would start over with them.
+    local skip = type(kept.skipped) == "table" and kept.skipped or {}
+    if type(kept.keys) == "table" then
+        local now = kept.keys[progress]
+        for index = 1, math.min(progress - 1, #kept.keys) do
+            local key = kept.keys[index]
+            if key and key ~= now and key ~= "finish" then skip[key] = true end
+        end
+    end
+    kept.skipped = skip
     local function plan(order)
         local env = ns.RouteEnvironment()
-        env.finish, env.order = kept.source.finish, order
+        env.finish, env.order, env.skip = kept.source.finish, order, skip
         local route = ns.PlanRoute(entries, env)
         if route then route.runes = env.runes end
         return route
@@ -1211,17 +1260,12 @@ function ns.Reroute()
             chosen, reordered = same, false
         end
     end
-    local text = ns.RouteGuideText(chosen, kept.back, kept.title)
-    local progress = 1
-    if type(rxp.GetGuideProgress) == "function" then
-        local ok, step = pcall(rxp.GetGuideProgress)
-        progress = ok and tonumber(step) or 1
-    end
+    local text, keys = ns.RouteGuideText(chosen, kept.back, kept.title)
     if SameAhead(kept.text, progress, text) then return false end
     local ok = Register(text)
     local guide = ok and rxp.GetGuideTable(ROUTE_GROUP, ROUTE_NAME)
     if not guide then return false end
-    kept.text, kept.order = text, chosen.order
+    kept.text, kept.keys, kept.order = text, keys, chosen.order
     rxp:LoadGuide(guide)
     if type(rxp.SetStep) == "function" then pcall(rxp.SetStep, 1) end
     return true, reordered

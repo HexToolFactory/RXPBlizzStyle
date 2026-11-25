@@ -42,6 +42,10 @@ local OPTIONS = {
         name = "Generate route in DungeonJournal",
         tooltip = "With the DungeonJournal addon: a Generate route button on its quest list. One trip that picks up the dungeon's quests, with the quests to do first, and ends at the entrance, as a RestedXP guide of its own.",
     }, {
+        key = "groupQuests",
+        name = "Group in DungeonJournal's tracker",
+        tooltip = "Hovering a quest in DungeonJournal's track window shows each group member: completed, has it, can take it or not eligible. Members with RXPBlizzStyle answer in full; for others Questie, their level and the game's replies when you share a quest are used.",
+    }, {
         key = "tagSpell",
         name = "Tag spell in the target macro",
         tooltip = "Adds a line that casts this spell to RestedXP's target macro (RXPTargeting), so one key press targets the mob of the current step and tags it. Pick an instant spell. The macro cannot be changed during a fight: the line is added after it.",
@@ -83,6 +87,10 @@ local DISPLAY = {
         name = "Anchor",
         tooltip = "Top: the current step at the top, the next steps below it (as the quest tracker does). Bottom: the current step at the bottom, the next steps above it, and the guide grows upwards from its lower end (like RestedXP's \"Current step frame anchor\"). With Bottom, turn on the height limit to keep the current step in one place below the quest tracker.",
         values = {{"TOP", "Top"}, {"BOTTOM", "Bottom"}},
+    }, {
+        key = "sideFrames",
+        name = "Active Items and Targets in tracker style",
+        tooltip = "RestedXP's Active Items and Active Targets windows get the quest tracker's header bar and button borders, without their background box. Drag them by the header bar. Off: RestedXP's own look.",
     },
 }
 

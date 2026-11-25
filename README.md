@@ -23,6 +23,7 @@ Requires the RestedXP Guides addon. This is an independent addon and is not made
 - Route planner: tick quests in Missing Prerequisites and use Generate route. The trip with flights, ships, zeppelins, your hearthstone and a mage's teleports becomes a RestedXP guide of its own, and RestedXP returns to your guide after it.
 - With the DungeonJournal addon: the same Generate route button on its quest list, for one trip that picks up a dungeon's quests and ends at the entrance.
 - Tag spell: pick one of your spells, and RestedXP's target macro also casts it on the mob of the current step.
+- RestedXP's Active Items and Active Targets windows in the same look: the quest tracker's header bar and button borders, no background box.
 
 ![Missing Prerequisites window](media/missing-prerequisites.png)
 

@@ -62,8 +62,33 @@ end
 local LEFT_OUT = {
     done = "done", log = "in your log", notforyou = "not for you", unknown = "not in Questie's database",
     inside = "starts inside", item = "starts from an item", level = "level too low", noplace = "no known place",
+    before = "an earlier quest inside",
 }
-local LEFT_OUT_ORDER = {"done", "log", "inside", "item", "level", "notforyou", "noplace", "unknown"}
+local LEFT_OUT_ORDER = {"done", "log", "inside", "before", "item", "level", "notforyou", "noplace", "unknown"}
+
+local function Outside(mapId, x, y)
+    return mapId and x and y and Outdoors(mapId) and true or false
+end
+
+-- Whether a quest to do before the entry's quest (its chain) has a step inside a dungeon or nowhere known: then the
+-- quest cannot be readied before the run (Maxwell's Mission waits for Bijou's Belongings, inside Blackrock Spire).
+local function NeedsInside(entry)
+    for _, info in ipairs(type(entry.chain) == "table" and entry.chain or {}) do
+        if type(info) == "table" and info.id ~= entry.id then
+            if info.status ~= "log" and info.status ~= "item" and not Outside(info.mapId, info.x, info.y) then return true end
+            if not Outside(info.endMapId, info.endX, info.endY) then return true end
+            local places, anywhere, outdoors = info.objectivePlaces, false, false
+            for mapId, spots in pairs(type(places) == "table" and places or {}) do
+                if type(spots) == "table" and #spots > 0 then
+                    anywhere = true
+                    if Outdoors(mapId) then outdoors = true end
+                end
+            end
+            if anywhere and not outdoors and not info.objectiveGiven then return true end
+        end
+    end
+    return false
+end
 
 -- Quests left out that the run still brings experience for; the others (done, level too low, ...) bring none.
 local STILL_COUNTS = {log = true, inside = true, item = true, noplace = true}
@@ -101,6 +126,8 @@ local function Build()
             leave("noplace", entry.id, entry.name, entry.xp)
         elseif not Outdoors(entry.mapId) then
             leave("inside", entry.id, entry.name, entry.xp)
+        elseif NeedsInside(entry) then
+            leave("before")
         else
             kept[#kept + 1] = entry
             rows[entry.id] = {id = entry.id, name = entry.name, xp = entry.xp}
@@ -196,6 +223,17 @@ local function Button_OnClick()
         type(back) == "table" and back.name and (" RestedXP returns to %s after it."):format(back.name) or ""))
 end
 
+-- DungeonJournal's own Track button sits in the same row. DungeonJournal puts it right of the frame in its
+-- questRouteButton field when that one shows, else in the first place: so the button goes there, and the row is
+-- laid out again whenever it shows or hides.
+local function PlaceTrackButton()
+    local journal = _G.ForeverDungeonJournal_NS
+    local track = _G.ForeverDungeonJournalFrame and _G.ForeverDungeonJournalFrame.questTrackButton
+    if type(journal) == "table" and type(journal.UpdateQuestTrackButton) == "function" and track and track.dungeon then
+        pcall(journal.UpdateQuestTrackButton, track.dungeon)
+    end
+end
+
 -- The button, under the "QUESTS" title of the journal's quest list; true once it is there (or never will be).
 local button
 local function Attach()
@@ -205,8 +243,11 @@ local function Attach()
     local panel = type(journal) == "table" and journal.questLeftPanel
     if not panel then return false end
     button = CreateFrame("Button", "RXPBlizzStyleDungeonRouteButton", panel, "UIPanelButtonTemplate")
-    button:SetSize(120, 20)
-    button:SetPoint("TOPLEFT", 10, -32)
+    button:SetSize(120, 22)
+    button:SetPoint("TOPLEFT", 10, -30)
+    if journal.questRouteButton == nil then journal.questRouteButton = button end
+    button:HookScript("OnShow", PlaceTrackButton)
+    button:HookScript("OnHide", PlaceTrackButton)
     button:SetText("Generate route")
     button:SetScript("OnEnter", Button_OnEnter)
     button:SetScript("OnLeave", function(self)
@@ -214,6 +255,7 @@ local function Attach()
     end)
     button:SetScript("OnClick", Button_OnClick)
     button:SetShown(ns.db.dungeonRoute ~= false)
+    PlaceTrackButton()
     return true
 end
 
