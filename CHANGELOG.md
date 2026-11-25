@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.6.0
+
+This version adds a file: restart the game after updating, `/reload` is not enough.
+
+- RestedXP's Active Items and Active Targets windows in the quest tracker's look: its header bar in place of the title tab, quest item borders on the buttons, no background box. Drag them by the header bar. On by default; switch it off under Options > AddOns > RestedXP Blizzard Style > Display ("Active Items and Targets in tracker style").
+- Fix: Generate route in DungeonJournal left out the earlier quests of chains only DungeonJournal knows (Blackmaw Reclamation in Blackmaw Hold). They are now in the route, in the chain's order.
+
 ## v1.5.0
 
 This version adds a file: restart the game after updating, `/reload` is not enough.

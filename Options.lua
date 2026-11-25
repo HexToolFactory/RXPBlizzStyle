@@ -87,6 +87,10 @@ local DISPLAY = {
         name = "Anchor",
         tooltip = "Top: the current step at the top, the next steps below it (as the quest tracker does). Bottom: the current step at the bottom, the next steps above it, and the guide grows upwards from its lower end (like RestedXP's \"Current step frame anchor\"). With Bottom, turn on the height limit to keep the current step in one place below the quest tracker.",
         values = {{"TOP", "Top"}, {"BOTTOM", "Bottom"}},
+    }, {
+        key = "sideFrames",
+        name = "Active Items and Targets in tracker style",
+        tooltip = "RestedXP's Active Items and Active Targets windows get the quest tracker's header bar and button borders, without their background box. Drag them by the header bar. Off: RestedXP's own look.",
     },
 }
 

@@ -732,6 +732,78 @@ function ns.PrereqData(rxp)
     return result
 end
 
+-- Chains the DungeonJournal addon knows and Questie does not: Blackmaw Reclamation waits for five quests between
+-- Ursolan and Legashi Stronghold, Questie lists none. The steps not done yet go into the entry's chain in their
+-- order, each waiting for the one before it, the quest itself for the last. Where Questie has no place for a step's
+-- giver, the journal's is taken. Of steps that are alternatives ("pick one of"), the one in the log or else the
+-- first is taken, none when one of them is done.
+local function JournalChain(db, player, covered, entry)
+    local journal = _G.ForeverDungeonJournal_NS
+    local steps = type(journal) == "table" and type(journal.QUEST_PREREQ_CHAINS) == "table"
+        and journal.QUEST_PREREQ_CHAINS[entry.id]
+    if type(steps) ~= "table" then return end
+    local details = type(journal.QUEST_PREREQ_DETAILS) == "table" and journal.QUEST_PREREQ_DETAILS or {}
+    local groups, byChoice = {}, {}
+    for _, step in ipairs(steps) do
+        if type(step) == "table" and type(step.id) == "number" then
+            if step.choice ~= nil then
+                local group = byChoice[step.choice]
+                if not group then
+                    group = {}
+                    byChoice[step.choice] = group
+                    groups[#groups + 1] = group
+                end
+                group[#group + 1] = step
+            else
+                groups[#groups + 1] = {step}
+            end
+        end
+    end
+    local have = {}
+    for _, info in ipairs(entry.chain) do have[info.id] = info end
+    local own = entry.chain[#entry.chain]
+    local previous
+    for _, group in ipairs(groups) do
+        local done, step = false, nil
+        for _, option in ipairs(group) do
+            if IsDone(option.id) then done = true end
+            if not step and IsInLog(option.id, player) then step = option end
+        end
+        step = step or group[1]
+        if not done then
+            local info = have[step.id]
+            if not info then
+                info = QuestInfo(db, player, covered, step.id)
+                if info.status == "unknown" then info.status = "available" end
+                if info.name == "Quest " .. step.id and step.name then info.name = step.name end
+                local known = details[step.id]
+                if type(known) == "table" then
+                    local start, finish = known.map, known.turninMap
+                    if not info.mapId and type(start) == "table" and start.mapID and start.x and start.y then
+                        info.mapId, info.x, info.y = start.mapID, start.x * 100, start.y * 100
+                        info.starter = info.starter or start.targetName
+                    end
+                    if not info.endMapId and type(finish) == "table" and finish.mapID and finish.x and finish.y then
+                        info.endMapId, info.endX, info.endY = finish.mapID, finish.x * 100, finish.y * 100
+                        info.ender = info.ender or finish.targetName
+                    end
+                end
+                table.insert(entry.chain, #entry.chain, info)
+                have[step.id] = info
+            end
+            if previous then
+                info.needs = info.needs or {}
+                info.needs[#info.needs + 1] = previous.id
+            end
+            previous = info
+        end
+    end
+    if previous and own ~= previous then
+        own.needs = own.needs or {}
+        own.needs[#own.needs + 1] = previous.id
+    end
+end
+
 -- For other addons (RXPBlizzStyleAPI in Route.lua): the quests of a list as entries for the route planner. Each
 -- is to be picked up only; the quests before it that are not done are done in full, whatever guide is loaded.
 -- Returns entries ({info..., kind = "handin", chain = {info, ..., the quest itself}}) and what was left out
@@ -752,6 +824,7 @@ function ns.QuestEntries(ids)
                 entry.kind, entry.chain = "handin", {}
                 for i, before in ipairs(Chain(db, player, covered, id)) do entry.chain[i] = QuestInfo(db, player, covered, before) end
                 entry.chain[#entry.chain + 1] = QuestInfo(db, player, covered, id)
+                JournalChain(db, player, covered, entry)
                 entries[#entries + 1] = entry
             end
         end

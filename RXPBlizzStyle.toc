@@ -18,3 +18,4 @@ Prereqs.lua
 Route.lua
 DungeonJournal.lua
 GroupQuests.lua
+SideFrames.lua
