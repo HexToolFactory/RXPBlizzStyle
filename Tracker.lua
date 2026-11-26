@@ -650,19 +650,21 @@ local function CreateHeader(collapseKey)
 end
 
 -- Where the auction house button of a guide line puts an item. A target counts while its addon is loaded:
--- available() says so, has(id) whether the item is on its list already, add(id, qty) puts it there.
+-- available() says so, has(id) whether the item is on its list already, add(id, qty, full) puts it there: qty is
+-- what is still missing, full what the step wants in all.
 
 local function ItemName(itemID)
     return C_Item and C_Item.GetItemNameByID and C_Item.GetItemNameByID(itemID)
 end
 
--- Forever Auction: its shopping list "Guide".
+-- Forever Auction: its shopping list "Guide". It takes off what the bags and the bank hold by itself, so it gets the
+-- step's full amount: with the missing amount 9 of 10 Gorilla Fangs in the bags made "need 0" of the one to buy.
 local foreverAuction = {
     available = function() return ForeverAuction_AddToShopping ~= nil end,
     has = function(itemID)
         return not ForeverAuction_ShoppingQty or (ForeverAuction_ShoppingQty(itemID) or 0) > 0
     end,
-    add = function(itemID, qty) ForeverAuction_AddToShopping(itemID, qty, "Guide") end,
+    add = function(itemID, qty, full) ForeverAuction_AddToShopping(itemID, full or qty, "Guide") end,
     hint = function() return "Forever Auction shows it at the auction house." end,
 }
 
@@ -775,40 +777,52 @@ local function AnyShopTarget()
     return false
 end
 
--- Dimmed once the item is on every list there is.
+-- A line's button holds shop = {items = {{id, qty, full}, ...}}: one item, or several for a line that names more.
+local function HasAll(target, shop)
+    for _, item in ipairs(shop.items) do
+        if not target.has(item.id) then return false end
+    end
+    return true
+end
+
+-- Dimmed once every item is on every list there is.
 local function Shop_Update(button)
-    local item = button.item
-    if not item then return end
+    local shop = button.item
+    if not shop then return end
     local done = true
     for _, target in ipairs(SHOP_TARGETS) do
-        if done and target.available() then done = target.has(item.id) end
+        if done and target.available() then done = HasAll(target, shop) end
     end
     button:SetAlpha(done and 0.45 or 1)
 end
 
 local function Shop_OnEnter(button)
     Row_OnEnter(button:GetParent())
-    local item = button.item
-    if not item then return end
+    local shop = button.item
+    if not shop then return end
     local onlySnatch, hints = true, {}
     for _, target in ipairs(SHOP_TARGETS) do
         if target.available() then
             onlySnatch = onlySnatch and target.snatch or false
-            hints[#hints + 1] = target.hint(item.id, target.has(item.id))
+            hints[#hints + 1] = target.hint(shop.items[1].id, HasAll(target, shop))
         end
     end
     GameTooltip:SetOwner(button, "ANCHOR_LEFT")
     GameTooltip:AddLine(onlySnatch and "Add to Auctioneer's snatch list" or "Add to the shopping list", 1, 1, 1)
-    GameTooltip:AddLine((ItemName(item.id) or "Item") .. " x" .. item.qty, 0.8, 0.8, 0.8)
+    for _, item in ipairs(shop.items) do
+        GameTooltip:AddLine((ItemName(item.id) or "Item") .. " x" .. item.qty, 0.8, 0.8, 0.8)
+    end
     for _, hint in ipairs(hints) do GameTooltip:AddLine(hint, 0.8, 0.8, 0.8, true) end
     GameTooltip:Show()
 end
 
 local function Shop_OnClick(button)
-    local item = button.item
-    if not item then return end
+    local shop = button.item
+    if not shop then return end
     for _, target in ipairs(SHOP_TARGETS) do
-        if target.available() then target.add(item.id, item.qty) end
+        if target.available() then
+            for _, item in ipairs(shop.items) do target.add(item.id, item.qty, item.full) end
+        end
     end
     Shop_Update(button)
 end
@@ -989,9 +1003,25 @@ local function Build()
         GameTooltip:Show()
     end)
     activeHeader.Prereqs:SetScript("OnLeave", GameTooltip_Hide)
+    -- Shows or hides the upcoming steps as a whole (their header included).
+    activeHeader.Upcoming = CreateFrame("Button", nil, activeHeader)
+    activeHeader.Upcoming:SetSize(16, 16)
+    activeHeader.Upcoming:SetPoint("RIGHT", activeHeader.Prereqs, "LEFT", -2, 0)
+    activeHeader.Upcoming:SetHighlightTexture("Interface/Buttons/UI-Common-MouseHilight", "ADD")
+    activeHeader.Upcoming:SetScript("OnClick", function()
+        ns.db.upcomingHidden = not ns.db.upcomingHidden
+        PlaySound(SOUNDKIT.IG_MAINMENU_OPTION_CHECKBOX_ON)
+        ns.Refresh()
+    end)
+    activeHeader.Upcoming:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        GameTooltip:AddLine(ns.db.upcomingHidden and "Show upcoming steps" or "Hide upcoming steps", 1, 1, 1)
+        GameTooltip:Show()
+    end)
+    activeHeader.Upcoming:SetScript("OnLeave", GameTooltip_Hide)
     activeHeader.Return = CreateFrame("Button", nil, activeHeader)
     activeHeader.Return:SetSize(14, 14)
-    activeHeader.Return:SetPoint("RIGHT", activeHeader.Prereqs, "LEFT", -3, 0)
+    activeHeader.Return:SetPoint("RIGHT", activeHeader.Upcoming, "LEFT", -3, 0)
     activeHeader.Return:SetNormalTexture("Interface\\Buttons\\UI-RefreshButton")
     activeHeader.Return:SetHighlightTexture("Interface\\Buttons\\UI-RefreshButton", "ADD")
     activeHeader.Return:SetScript("OnClick", function()
@@ -1010,7 +1040,7 @@ local function Build()
     end)
     activeHeader.Return:SetScript("OnLeave", GameTooltip_Hide)
     activeHeader.Return:Hide()
-    activeHeader.Text:SetWidth(Width() - 132)
+    activeHeader.Text:SetWidth(Width() - 150)
     upcomingHeader = CreateHeader("upcomingCollapsed")
     upcomingHeader.Text:SetText("Upcoming Steps")
 
@@ -1102,7 +1132,7 @@ local function ApplyWidth()
             header.Background:SetWidth(header.backgroundWidth * width / DEFAULT_WIDTH)
         end
     end
-    activeHeader.Text:SetWidth(width - 132)
+    activeHeader.Text:SetWidth(width - 150)
     upcomingHeader.Text:SetWidth(width - 60)
     grip:SetWidth(width)
     ns.forceRedraw = true
@@ -1184,18 +1214,62 @@ local function MentionsAuctionHouse(step)
     return false
 end
 
--- What the auction house button of a line would put on a shopping list: an item the step still wants, in a step that
--- names the auction house. Nothing without Forever Auction, Auctionator or Auctioneer's Search UI, so nobody else sees
--- the button.
+-- RestedXP's .blastedLands line names five items in one line, without an item ID: the turn-ins of the Blasted Lands
+-- quests. What each of those quests wants (RestedXP's BLquests in functions.lua); a quest handed in wants nothing.
+local BLASTED_LANDS = {
+    {id = 8396, quests = {[2601] = 2, [2585] = 2, [2603] = 10}},            -- Vulture Gizzard
+    {id = 8394, quests = {[2583] = 1, [2601] = 10}},                        -- Basilisk Brain
+    {id = 8392, quests = {[2583] = 3, [2585] = 1, [2581] = 2}},             -- Blasted Boar Lung
+    {id = 8393, quests = {[2583] = 2, [2585] = 3, [2581] = 1}},             -- Scorpok Pincer
+    {id = 8391, quests = {[2581] = 3, [2603] = 2}},                         -- Snickerfang Jowl
+}
+
+local function ItemCount(itemID)
+    return C_Item and C_Item.GetItemCount and C_Item.GetItemCount(itemID) or 0
+end
+
+local function QuestTurnedIn(questID)
+    local rxp = ns.GetRXP and ns.GetRXP()
+    if rxp and rxp.IsQuestTurnedIn then return rxp.IsQuestTurnedIn(questID) end
+    return C_QuestLog and C_QuestLog.IsQuestFlaggedCompleted and C_QuestLog.IsQuestFlaggedCompleted(questID) or false
+end
+
+-- qty is what is still missing, full what the line wants in all
+local function ShopEntry(itemID, qty, count)
+    if qty >= 1000 then qty = count + 1 end -- guides write "as many as there are" with a huge number: one more
+    return {id = itemID, qty = math.max(qty - count, 1), full = math.max(qty, count + 1)}
+end
+
+-- What the auction house button of a line would put on a shopping list: the items the step still wants, in a step
+-- that names the auction house. Nothing without Forever Auction, Auctionator or Auctioneer's Search UI, so nobody
+-- else sees the button.
 function ns.ShopItem(step, element)
-    if element.tag ~= "collect" and element.tag ~= "buy" then return end
-    if not AnyShopTarget() then return end
-    if type(element.id) ~= "number" or element.completed or element.skip then return end
-    if not MentionsAuctionHouse(step) then return end
-    local count = C_Item and C_Item.GetItemCount and C_Item.GetItemCount(element.id) or 0
-    local qty = tonumber(element.qty) or 1
-    if qty >= 1000 then qty = 1 end         -- guides write "as many as there are" with a huge number
-    return {id = element.id, qty = math.max(qty - count, 1)}
+    local blasted = element.tag == "blastedLands"
+    if not (blasted or element.tag == "collect" or element.tag == "buy") then return end
+    if element.completed or element.skip then return end
+    if not AnyShopTarget() or not MentionsAuctionHouse(step) then return end
+    local items = {}
+    if blasted then
+        for _, wanted in ipairs(BLASTED_LANDS) do
+            local goal = 0
+            for quest, n in pairs(wanted.quests) do
+                if not QuestTurnedIn(quest) then goal = goal + n end
+            end
+            local count = ItemCount(wanted.id)
+            if goal > count then items[#items + 1] = ShopEntry(wanted.id, goal, count) end
+        end
+    elseif type(element.id) == "number" then
+        items[1] = ShopEntry(element.id, tonumber(element.qty) or 1, ItemCount(element.id))
+    end
+    if #items > 0 then return {items = items} end
+end
+
+-- the items and amounts of a line's button, for the signature: the button is drawn again when they change
+local function ShopSignature(shop)
+    if not shop then return "" end
+    local parts = {}
+    for _, item in ipairs(shop.items) do parts[#parts + 1] = item.id .. "x" .. item.qty end
+    return table.concat(parts, ",")
 end
 
 -- The line's element when it picks up, works on or hands in a quest (for Questie's tooltip).
@@ -1252,7 +1326,14 @@ local function ActiveBlocks(rxp, signature)
                     local shop = ns.ShopItem(step, element)
                     block.lines[#block.lines + 1] = {text = icon .. text, state = state, element = element, missing = missing, shop = shop,
                         quest = QuestElement(element)}
-                    AddToSignature(signature, state, icon, text, missing, shop and shop.id, shop and shop.qty)
+                    AddToSignature(signature, state, icon, text, missing, ShopSignature(shop))
+                end
+            end
+            -- Target and item buttons at the end of the lines (LineButtons.lua).
+            if ns.db.lineButtons and ns.LineButtonsForStep then
+                ns.LineButtonsForStep(rxp, step, block.lines)
+                for _, line in ipairs(block.lines) do
+                    for _, button in ipairs(line.buttons or {}) do AddToSignature(signature, "button", button.key) end
                 end
             end
             local pin = ns.db.pin
@@ -1361,7 +1442,7 @@ end
 local function UpcomingBlocks(rxp, guide, signature)
     local blocks = {}
     local count = UpcomingCount()
-    if count <= 0 or ns.db.upcomingCollapsed then return blocks end
+    if count <= 0 or ns.db.upcomingCollapsed or ns.db.upcomingHidden then return blocks end
 
     local current = rxp.GetGuideProgress()
     if scrollStep ~= current then scrollStep, scrollOffset = current, 0 end
@@ -1423,13 +1504,39 @@ local function PlaceRow(kind, line, block, y)
     row.missing = kind == "line" and line.missing or false
     row.quest = kind == "line" and line.quest or nil
 
-    local indent = kind == "line" and dashWidth or 0
     local width = Width() - BLOCK_INDENT
+    -- The target and item buttons (LineButtons.lua): after the lines or in a column before them (lineButtonSide).
+    -- row.buttonSlots holds each button's left edge from the row's left.
+    local buttons = kind == "line" and line.buttons or nil
+    row.buttons = buttons and #buttons > 0 and buttons or nil
+    local most = 0
+    if kind == "line" then
+        for _, other in ipairs(block.lines) do most = math.max(most, other.buttons and #other.buttons or 0) end
+    end
+    local shopRoom = kind == "line" and line.shop and SHOP_SIZE + 2 or 0
+    local slots, column, buttonRoom
+    if ns.LineButtonSlots then
+        slots, column, buttonRoom = ns.LineButtonSlots(row.buttons and #row.buttons or 0, most, width, shopRoom)
+    end
+    row.buttonSlots, column, buttonRoom = slots, column or 0, buttonRoom or 0
+    -- Text alignment Right (textAlign): the text at the frame's right side, the dash and check mark after it.
+    local rightText = ns.db.textAlign == "RIGHT"
+    local lead = column > 0 and not rightText and column + 10 or column   -- 10: room for the check mark left of the dash
+    local dashRoom = kind == "line" and dashWidth or 0
+    local indent = rightText and lead or lead + dashRoom
+    local dashX = rightText and width - shopRoom - buttonRoom - dashWidth or lead
+    row.Dash:ClearAllPoints()
+    row.Dash:SetPoint("TOPLEFT", dashX, 1)
+    row.Check:ClearAllPoints()
+    row.Check:SetPoint("TOPLEFT", dashX - (rightText and 3 or 10), 2)
+    row.Toggle:ClearAllPoints()
+    row.Toggle:SetPoint("TOPLEFT", dashX - (rightText and 3 or 10), 2)
     row.Dash:SetShown(row.state == "todo")
     row.Check:SetShown(row.state == "done")
     row.Toggle:SetShown(row.element ~= nil and row.state ~= "note" and not block.upcoming)
     row.Text:ClearAllPoints()
     row.Text:SetPoint("TOPLEFT", indent, 0)
+    row.Text:SetJustifyH(rightText and "RIGHT" or "LEFT")
     local shop = kind == "line" and line.shop or nil
     row.Shop.item = shop
     row.Shop:SetShown(shop ~= nil)
@@ -1439,7 +1546,14 @@ local function PlaceRow(kind, line, block, y)
     row.quests = kind == "title" and block.quests or nil
     row.Info.quests = follow
     row.Info:SetShown(#follow > 0)
-    local textWidth = width - indent - (shop and SHOP_SIZE + 2 or 0) - (#follow > 0 and INFO_SIZE + 4 or 0)
+    local textWidth = width - lead - dashRoom - (rightText and dashRoom > 0 and 2 or 0) - shopRoom
+        - (#follow > 0 and INFO_SIZE + 4 or 0) - buttonRoom
+    if rightText and #follow > 0 then
+        -- The info button's room is on the left then: the title still ends at the frame's right side.
+        indent = indent + INFO_SIZE + 4
+        row.Text:ClearAllPoints()
+        row.Text:SetPoint("TOPLEFT", indent, 0)
+    end
     row.Text:SetWidth(textWidth)
     local text = kind == "line" and line.text or block.title
     -- Names in guide text carry their own colours; a line that is red as a whole must not.
@@ -1447,9 +1561,11 @@ local function PlaceRow(kind, line, block, y)
     row.Text:SetText(text)
     if #follow > 0 then
         local _, fontHeight = row.Text:GetFont()
-        local x = indent + math.min(row.Text:GetStringWidth() or 0, textWidth) + 4
+        local shown = math.min(row.Text:GetStringWidth() or 0, textWidth)
+        -- After the title, or before it when the text sits on the right.
+        local x = rightText and indent + textWidth - shown - 4 - INFO_SIZE / 2 or indent + shown + 4 + INFO_SIZE / 2
         row.Info:ClearAllPoints()
-        row.Info:SetPoint("CENTER", row, "TOPLEFT", x + INFO_SIZE / 2, -(fontHeight or 12) / 2)
+        row.Info:SetPoint("CENTER", row, "TOPLEFT", x, -(fontHeight or 12) / 2)
     end
     ColorRow(row)
 
@@ -1520,7 +1636,7 @@ local function DrawFlipped(active, upcoming, floor)
     activeHeader:SetPoint("TOPLEFT", root, "BOTTOMLEFT", 0, top + HEADER_HEIGHT)
     top = top + HEADER_HEIGHT
 
-    local showUpcoming = UpcomingCount() > 0 and (ns.db.upcomingCollapsed or #upcoming > 0)
+    local showUpcoming = not ns.db.upcomingHidden and UpcomingCount() > 0 and (ns.db.upcomingCollapsed or #upcoming > 0)
     local needed = MODULE_GAP + HEADER_HEIGHT + (ns.db.upcomingCollapsed and 0 or BLOCK_GAP + 30)
     if cut or (limit and top + needed > limit) then showUpcoming = false end
     upcomingHeader:SetShown(showUpcoming)
@@ -1558,7 +1674,11 @@ local function Draw(title, tooltipTitle, active, upcoming, floor)
     activeHeader.Previous:SetShown(tooltipTitle ~= nil)
     local pinned = ns.db.pin ~= nil and tooltipTitle ~= nil
     activeHeader.Return:SetShown(pinned)
-    activeHeader.Text:SetWidth(Width() - 132 - (pinned and 17 or 0))
+    activeHeader.Text:SetWidth(Width() - 150 - (pinned and 17 or 0))
+    -- The arrow points where the upcoming steps go: down while they are hidden, up to hide them.
+    local arrow = ns.db.upcomingHidden and "Down" or "Up"
+    activeHeader.Upcoming:SetNormalTexture("Interface/Buttons/Arrow-" .. arrow .. "-Up")
+    activeHeader.Upcoming:SetPushedTexture("Interface/Buttons/Arrow-" .. arrow .. "-Down")
     activeHeader.tooltipTitle = tooltipTitle
     SetCollapseButton(activeHeader.Collapse, ns.db.activeCollapsed)
 
@@ -1574,7 +1694,7 @@ local function Draw(title, tooltipTitle, active, upcoming, floor)
     local y, cut = -HEADER_HEIGHT, false
     if not ns.db.activeCollapsed then y, cut = DrawBlocks(active, y) end
 
-    local showUpcoming = UpcomingCount() > 0 and (ns.db.upcomingCollapsed or #upcoming > 0)
+    local showUpcoming = not ns.db.upcomingHidden and UpcomingCount() > 0 and (ns.db.upcomingCollapsed or #upcoming > 0)
     -- The second header needs room for itself and, unless collapsed, for a first step below it.
     local needed = MODULE_GAP + HEADER_HEIGHT + (ns.db.upcomingCollapsed and 0 or BLOCK_GAP + 30)
     if cut or (floor and y - needed < floor) then showUpcoming = false end
@@ -1596,6 +1716,9 @@ local function Draw(title, tooltipTitle, active, upcoming, floor)
     for index = usedRows + 1, #rows do rows[index]:Hide() end
     root:SetHeight(math.max(-y, HEADER_HEIGHT))
 end
+
+-- For LineButtons.lua: the rows (the first count of them are in use) and the guide's frame.
+function ns.TrackerRows() return rows, usedRows or 0, root end
 
 --------------------------------------------------------------------------------------------------
 -- Position: where the quest tracker's next section would start, or wherever it was dragged

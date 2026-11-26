@@ -25,6 +25,12 @@ ns.defaults = {
     dungeonRoute = true,  -- a Generate route button on the DungeonJournal addon's quest list (DungeonJournal.lua)
     groupQuests = true,   -- group members' quest states in DungeonJournal's track window tooltips (GroupQuests.lua)
     sideFrames = true,    -- RestedXP's Active Items and Active Targets windows in the quest tracker's look (SideFrames.lua)
+    hideItemWindow = false,   -- hide RestedXP's Active Items window (its key bindings still work)
+    hideTargetWindow = false, -- hide RestedXP's Active Targets window (its key bindings and target macro still work)
+    lineButtons = true,   -- target and item buttons on the guide's lines (LineButtons.lua)
+    lineButtonSide = "RIGHT",   -- those buttons after the lines' text or before it
+    textAlign = "LEFT",   -- the guide's text at the frame's left or right side
+    upcomingHidden = false,   -- the upcoming steps hidden as a whole (arrow button on the header bar)
     -- Display
     scale = 1,            -- on top of the quest tracker's own scale
     width = 260,

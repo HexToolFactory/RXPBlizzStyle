@@ -9,6 +9,9 @@ local addonName, ns = ...
 -- sizes them. Only textures are shown or hidden and our own header frame is drawn, and only out of a fight.
 -- RestedXP draws its backdrop again in UpdateSubTheme; a hook on that widget's method takes it off again.
 -- The windows stay where RestedXP keeps them and are dragged through RestedXP's own StartMoving.
+--
+-- Options hideItemWindow / hideTargetWindow hide a window as a whole, out of a fight (RestedXP only shows them out of
+-- one too). RestedXP's key bindings stay: they click its buttons by name, which works on hidden buttons as well.
 
 local HEADER_HEIGHT = 25
 local BORDER = 1.83   -- the quick slot border's size against its button, as on action buttons
@@ -18,10 +21,15 @@ local ui              -- RestedXP's addon.ui.v2
 
 local function Widgets(rxp)
     local list = {}
-    if rxp.activeItemWindow then list[#list + 1] = {rxp.activeItemWindow, "Active Items", "buttonList"} end
+    if rxp.activeItemWindow then
+        list[#list + 1] = {rxp.activeItemWindow, "Active Items", "hideItemWindow",
+            function() if rxp.UpdateItemFrame then rxp.UpdateItemFrame() end end, "buttonList"}
+    end
     local targeting = rxp.targeting
     if targeting and targeting.activeTargetWindow then
-        list[#list + 1] = {targeting.activeTargetWindow, "Active Targets", "enemyTargetButtons", "friendlyTargetButtons"}
+        list[#list + 1] = {targeting.activeTargetWindow, "Active Targets", "hideTargetWindow",
+            function() if targeting.UpdateTargetFrame then targeting:UpdateTargetFrame() end end,
+            "enemyTargetButtons", "friendlyTargetButtons"}
     end
     return list
 end
@@ -92,27 +100,49 @@ local function Restore(w, piece)
     w:UpdateTheme()                      -- RestedXP's backdrop, with its own background setting
 end
 
+-- Hidden by option: RestedXP shows the window again whenever it updates it, and it is hidden again before it is drawn.
+local function UpdateHidden(w, piece)
+    if InCombatLockdown() then return end
+    if ns.db[piece.hideKey] then
+        piece.hidden = true
+        if w.frame:IsShown() then w.frame:Hide() end
+    elseif piece.hidden then
+        piece.hidden = nil
+        piece.refresh()   -- RestedXP shows it again if it has something to show
+    end
+end
+
 local function Update(rxp)
     ui = rxp.ui and rxp.ui.v2
     for _, entry in ipairs(Widgets(rxp)) do
-        local w, label = entry[1], entry[2]
-        local lists = {unpack(entry, 3)}
+        local w, label, hideKey, refresh = entry[1], entry[2], entry[3], entry[4]
+        local lists = {unpack(entry, 5)}
         local piece = windows[w]
         if not piece then
             assert(w.frame and w.title and w.title.text and ui and ui.SetFrameBackdropShown,
                 "RestedXP's mini frames changed")
-            piece = {label = label, borders = {}, lists = lists}
+            piece = {label = label, borders = {}, lists = lists, hideKey = hideKey, refresh = refresh}
             windows[w] = piece
             hooksecurefunc(w, "UpdateSubTheme", function(this)
                 if ns.db.sideFrames and windows[this].styled then Apply(this, windows[this], windows[this].lists) end
             end)
+            w.frame:HookScript("OnShow", function(frame)
+                if ns.db[hideKey] and not InCombatLockdown() then frame:Hide() end
+            end)
         end
         if ns.db.sideFrames then Apply(w, piece, lists) else Restore(w, piece) end
+        UpdateHidden(w, piece)
     end
 end
 
 local function Disable()
-    for w, piece in pairs(windows) do pcall(Restore, w, piece) end
+    for w, piece in pairs(windows) do
+        pcall(Restore, w, piece)
+        if piece.hidden and not InCombatLockdown() then
+            piece.hidden = nil
+            pcall(piece.refresh)
+        end
+    end
 end
 
 ns.RegisterPart("tracker style for active items and targets", Update, Disable)

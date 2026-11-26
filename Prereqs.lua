@@ -848,6 +848,25 @@ function ns.QuestHint(id)
     return info
 end
 
+-- For the target buttons on the guide's lines (LineButtons.lua): the NPCs who start and end a quest and those of its
+-- objectives, {starter = {id, name}, ender = {id, name}, mobs = {{id, name, maps}, ...}}; objects and items are left
+-- out (they cannot be targeted). Kept per quest; nil without Questie or for a quest it does not know.
+local unitsCache = {}
+function ns.QuestUnits(id)
+    if unitsCache[id] then return unitsCache[id] end
+    local db = Questie("QuestieDB")
+    if not (db and db.QueryQuestSingle and type(id) == "number" and id > 0 and IsKnown(db, id)) then return end
+    local units = {mobs = {}}
+    local starter, _, _, _, _, starterNpc = Starter(db, id)
+    if type(starterNpc) == "number" then units.starter = {id = starterNpc, name = starter} end
+    local ender, _, _, _, _, enderNpc = Ender(db, id)
+    if type(enderNpc) == "number" then units.ender = {id = enderNpc, name = ender} end
+    local _, _, _, _, mobs = Objectives(db, id)
+    units.mobs = type(mobs) == "table" and mobs or {}
+    unitsCache[id] = units
+    return units
+end
+
 -- The first step of the guide with each of its quests (accepted, worked on or handed in), by quest ID.
 local stepsCache = {}
 local function GuideSteps(rxp, guide)

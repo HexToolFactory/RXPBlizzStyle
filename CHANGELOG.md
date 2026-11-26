@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.7.0
+
+This version adds a file: restart the game after updating, `/reload` is not enough.
+
+- Target and item buttons at the end of the current step's lines: the NPC to pick up from or hand in to, the mobs of an objective, the line's item. From Questie, else the step's RestedXP targets and items. RestedXP's own target macro and key bindings stay as they are. Lines that change during a fight get their buttons after it. Option "Target and item buttons on lines".
+- Option "Line buttons side" (Display): the buttons at the right end of the lines, or sticking out to the left of them (the text stays where it is).
+- Option "Text alignment" (Display): the guide's text at the left or right side of its frame, the dash and check mark after the text on the right.
+- An arrow button next to the Missing Prerequisites icon hides the upcoming steps as a whole, and shows them again.
+- Options "Hide Active Items" and "Hide Active Targets" (Display): RestedXP's windows are switched off, their key bindings still work.
+
 ## v1.6.0
 
 This version adds a file: restart the game after updating, `/reload` is not enough.
