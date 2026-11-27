@@ -848,6 +848,71 @@ function ns.QuestHint(id)
     return info
 end
 
+-- For the target buttons on the guide's lines (LineButtons.lua): the NPCs who start and end a quest and those of its
+-- objectives, {starter = {id, name}, ender = {id, name}, mobs = {{id, name, maps}, ...}}; objects and items are left
+-- out (they cannot be targeted). Kept per quest; nil without Questie or for a quest it does not know.
+local unitsCache = {}
+
+-- The quest's objectives that mobs serve, each with its name (the mob to kill, the item to loot) and those mobs:
+-- {{name, mobs = {{id, name, maps}, ...}}, ...}.
+local function ObjectiveMobs(db, id)
+    local list, known = {}, {}
+    local function Mob(npcId)
+        if type(npcId) ~= "number" then return end
+        if known[npcId] == nil then
+            known[npcId] = false
+            local name = Query(db, "QueryNPCSingle", npcId, "name")
+            if type(name) == "string" and name ~= "" then
+                local maps = {}
+                local spawns = Query(db, "QueryNPCSingle", npcId, "spawns")
+                for areaId in pairs(type(spawns) == "table" and spawns or {}) do
+                    local _, mapId = ZoneName(areaId)
+                    if mapId then maps[mapId] = true end
+                end
+                known[npcId] = {id = npcId, name = name, maps = maps}
+            end
+        end
+        return known[npcId] or nil
+    end
+    local function Add(name, npcIds)
+        local entry = {name = name, mobs = {}}
+        for _, npcId in ipairs(npcIds) do entry.mobs[#entry.mobs + 1] = Mob(npcId) end
+        if type(name) == "string" and name ~= "" and #entry.mobs > 0 then list[#list + 1] = entry end
+    end
+    local objectives = QuestValue(db, id, "objectives")
+    if type(objectives) ~= "table" then return list end
+    for _, o in ipairs(type(objectives[1]) == "table" and objectives[1] or {}) do
+        if type(o) == "table" then Add(o[2] or Query(db, "QueryNPCSingle", o[1], "name"), {o[1]}) end
+    end
+    for _, o in ipairs(type(objectives[3]) == "table" and objectives[3] or {}) do
+        if type(o) == "table" then
+            local droppers = Query(db, "QueryItemSingle", o[1], "npcDrops")
+            Add(o[2] or Query(db, "QueryItemSingle", o[1], "name"), type(droppers) == "table" and droppers or {})
+        end
+    end
+    for _, o in ipairs(type(objectives[5]) == "table" and objectives[5] or {}) do
+        if type(o) == "table" then
+            Add(o[3] or Query(db, "QueryNPCSingle", o[2], "name"), type(o[1]) == "table" and o[1] or {})
+        end
+    end
+    return list
+end
+function ns.QuestUnits(id)
+    if unitsCache[id] then return unitsCache[id] end
+    local db = Questie("QuestieDB")
+    if not (db and db.QueryQuestSingle and type(id) == "number" and id > 0 and IsKnown(db, id)) then return end
+    local units = {mobs = {}}
+    local starter, _, _, _, _, starterNpc = Starter(db, id)
+    if type(starterNpc) == "number" then units.starter = {id = starterNpc, name = starter} end
+    local ender, _, _, _, _, enderNpc = Ender(db, id)
+    if type(enderNpc) == "number" then units.ender = {id = enderNpc, name = ender} end
+    local _, _, _, _, mobs = Objectives(db, id)
+    units.mobs = type(mobs) == "table" and mobs or {}
+    units.objectives = ObjectiveMobs(db, id)
+    unitsCache[id] = units
+    return units
+end
+
 -- The first step of the guide with each of its quests (accepted, worked on or handed in), by quest ID.
 local stepsCache = {}
 local function GuideSteps(rxp, guide)

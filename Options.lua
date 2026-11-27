@@ -91,6 +91,28 @@ local DISPLAY = {
         key = "sideFrames",
         name = "Active Items and Targets in tracker style",
         tooltip = "RestedXP's Active Items and Active Targets windows get the quest tracker's header bar and button borders, without their background box. Drag them by the header bar. Off: RestedXP's own look.",
+    }, {
+        key = "hideItemWindow",
+        name = "Hide Active Items",
+        tooltip = "Hides RestedXP's Active Items window. Its key bindings still use the items.",
+    }, {
+        key = "hideTargetWindow",
+        name = "Hide Active Targets",
+        tooltip = "Hides RestedXP's Active Targets window. Its key bindings and the target macro still work.",
+    }, {
+        key = "lineButtons",
+        name = "Target and item buttons on lines",
+        tooltip = "Small buttons at the end of a line of the current step: target its NPC or mob, or use its item. RestedXP's own target macro and key bindings stay as they are. Placed after a fight when the lines change during one.",
+    }, {
+        key = "lineButtonSide",
+        name = "Line buttons side",
+        tooltip = "Target and item buttons at the right or left end of the lines.",
+        values = {{"RIGHT", "Right"}, {"LEFT", "Left"}},
+    }, {
+        key = "textAlign",
+        name = "Text alignment",
+        tooltip = "The guide's text at the left or right side of its frame.",
+        values = {{"LEFT", "Left"}, {"RIGHT", "Right"}},
     },
 }
 

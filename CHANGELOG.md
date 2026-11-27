@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.7.1
+
+- One button per line. A kill line targets only its own mob; two kill lines in a step each get their own.
+- Several mobs that drop a line's item share one button: it targets the nearest living one in sight (by nameplate).
+
+## v1.7.0
+
+This version adds a file: restart the game after updating, `/reload` is not enough.
+
+- Target and item buttons at the end of the current step's lines: the NPC to pick up from or hand in to, the mobs of an objective, the line's item. From Questie, else the step's RestedXP targets and items. RestedXP's own target macro and key bindings stay as they are. Lines that change during a fight get their buttons after it. Option "Target and item buttons on lines".
+- Option "Line buttons side" (Display): the buttons at the right end of the lines, or sticking out to the left of them (the text stays where it is).
+- Option "Text alignment" (Display): the guide's text at the left or right side of its frame, the dash and check mark after the text on the right.
+- An arrow button next to the Missing Prerequisites icon hides the upcoming steps as a whole, and shows them again.
+- Auction house button: a line that names several items puts all of them on the shopping list, and Forever Auction gets the step's full amount (it takes off what you hold itself).
+- Options "Hide Active Items" and "Hide Active Targets" (Display): RestedXP's windows are switched off, their key bindings still work.
+
 ## v1.6.0
 
 This version adds a file: restart the game after updating, `/reload` is not enough.
