@@ -13,7 +13,6 @@ local addonName, ns = ...
 
 local SIZE = 16
 local GAP = 2
-local MAX_PER_LINE = 3
 local ENEMY_ICON = 135274      -- RestedXP's own placeholders: a sword for mobs,
 local FRIENDLY_ICON = 2056011  -- a speech bubble for NPCs
 ns.LINE_BUTTON_SIZE, ns.LINE_BUTTON_GAP = SIZE, GAP
@@ -62,8 +61,30 @@ local function LocalMobs(mobs)
     return #here > 0 and here or mobs
 end
 
--- Sets line.buttons ({kind = "target" / "mob" / "item", name, item, icon, key}) on the lines of an active step that
--- still have something to do. Each name or item once per step.
+-- A line's text without colours and icons, in lower case, to look for names in.
+local function PlainText(text)
+    if type(text) ~= "string" then return "" end
+    return (text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""):gsub("|T.-|t", ""):gsub("|A.-|a", ""):lower())
+end
+
+local function Mentions(text, name)
+    return type(name) == "string" and name ~= "" and text:find(name:lower(), 1, true) ~= nil
+end
+
+-- The mobs of the quest objective a line is about: the objective named in the line's text ("5/8 Blackwood Pathfinder
+-- slain", "2/6 Moonstalker Fang"), else the only objective, else all of the quest's mobs.
+local function LineMobs(units, text)
+    local objectives = type(units.objectives) == "table" and units.objectives or {}
+    for _, objective in ipairs(objectives) do
+        if Mentions(text, objective.name) then return objective.mobs end
+    end
+    if #objectives == 1 then return objectives[1].mobs end
+    return units.mobs or {}
+end
+
+-- Sets line.buttons ({kind = "target" / "mob" / "item", name, names, item, icon, key}) on the lines of an active step
+-- that still have something to do: one button per line. A button with several names (mobs that all drop the line's
+-- item) targets the nearest of them. Each name or item once per step.
 function ns.LineButtonsForStep(rxp, step, lines)
     local todo = {}
     for _, line in ipairs(lines) do
@@ -71,33 +92,41 @@ function ns.LineButtonsForStep(rxp, step, lines)
     end
     if #todo == 0 then return end
     local used = {}
+    local function free(line) return line and not line.buttons end
     local function add(line, button)
-        if not line then return end
-        button.key = button.kind .. ":" .. (button.item or button.name)
-        if used[button.key] then return end
-        line.buttons = line.buttons or {}
-        if #line.buttons >= MAX_PER_LINE then return end
-        used[button.key] = true
-        line.buttons[#line.buttons + 1] = button
+        if not free(line) then return end
+        local key = button.item or table.concat(button.names, "/")
+        button.key = button.kind .. ":" .. key
+        line.buttons = {button}
     end
-    local function unit(line, kind, name)
-        if type(name) == "string" and name ~= "" then
-            add(line, {kind = kind, name = name, icon = kind == "mob" and ENEMY_ICON or FRIENDLY_ICON})
+    local function unit(line, kind, names)
+        if not free(line) then return end
+        local list, seen = {}, {}
+        for _, name in ipairs(names) do
+            if type(name) == "string" and name ~= "" and not used[kind .. ":" .. name] and not seen[name] then
+                seen[name] = true
+                list[#list + 1] = name
+            end
         end
+        if #list == 0 then return end
+        for _, name in ipairs(list) do used[kind .. ":" .. name] = true end
+        add(line, {kind = kind, name = list[1], names = list, icon = kind == "mob" and ENEMY_ICON or FRIENDLY_ICON})
     end
     local function item(line, id)
-        if type(id) == "number" and ItemCount(id) > 0 then
+        if free(line) and type(id) == "number" and not used["item:" .. id] and ItemCount(id) > 0 then
+            used["item:" .. id] = true
             add(line, {kind = "item", item = id, icon = ItemIcon(id) or 134400})
         end
     end
 
-    -- Items: a .use line has its own; the step's other items go to the quest they belong to, else the first line.
+    -- Items: a .use line has its own; an item of the step goes to the quest it belongs to.
     for _, line in ipairs(todo) do
         for id in pairs(type(line.element.activeItems) == "table" and line.element.activeItems or {}) do item(line, id) end
     end
+    local loose = {}
     for id, active in pairs(type(step.activeItems) == "table" and step.activeItems or {}) do
         if active then
-            local home = todo[1]
+            local home
             for _, line in ipairs(todo) do
                 local quest = line.quest and RealId(rxp, line.quest.questId)
                 if quest and (QuestHasItem(rxp.questCompleteItems, quest, id) or QuestHasItem(rxp.questAcceptItems, quest, id)
@@ -106,30 +135,32 @@ function ns.LineButtonsForStep(rxp, step, lines)
                     break
                 end
             end
-            item(home, id)
+            if home then item(home, id) else loose[#loose + 1] = id end
         end
     end
 
-    -- Units of the quest lines, from Questie: the giver to pick up from, the NPC to hand in to, the objective's mobs.
-    local fromQuestie = {}
+    -- Units of the quest lines, from Questie: the giver to pick up from, the NPC to hand in to, the mobs of the
+    -- objective the line is about.
     for _, line in ipairs(todo) do
         local quest = line.quest
         local units = quest and ns.QuestUnits and ns.QuestUnits(RealId(rxp, quest.questId))
         if units then
             local tag = line.element.tag
             if tag == "accept" and units.starter then
-                unit(line, "target", units.starter.name)
+                unit(line, "target", {units.starter.name})
             elseif tag == "turnin" and units.ender then
-                unit(line, "target", units.ender.name)
+                unit(line, "target", {units.ender.name})
             elseif tag == "complete" then
-                for _, mob in ipairs(LocalMobs(units.mobs or {})) do unit(line, "mob", mob.name) end
+                local names = {}
+                for _, mob in ipairs(LocalMobs(LineMobs(units, PlainText(line.text)))) do names[#names + 1] = mob.name end
+                unit(line, "mob", names)
             end
-            fromQuestie[line] = line.buttons ~= nil
         end
     end
 
-    -- The step's own RestedXP units: NPCs to the pick up and hand in lines, mobs to the objective lines (one Questie
-    -- did not fill first), else the first line that is not about a quest, else the first line.
+    -- The step's own RestedXP units: a mob to the objective line that names it; the rest together on one line, NPCs on
+    -- a pick up or hand in line, mobs on an objective line, else the first line that is not about a quest, else the
+    -- first line with room.
     local friendly, enemy = {}, {}
     for _, element in ipairs(step.elements or {}) do
         for _, t in ipairs(type(element.targets) == "table" and element.targets or {}) do friendly[#friendly + 1] = CreatureName(rxp, t) end
@@ -137,26 +168,34 @@ function ns.LineButtonsForStep(rxp, step, lines)
             for _, t in ipairs(type(list) == "table" and list or {}) do enemy[#enemy + 1] = CreatureName(rxp, t) end
         end
     end
+    local rest = {}
+    for _, name in ipairs(enemy) do
+        local placed = false
+        for _, line in ipairs(todo) do
+            if free(line) and line.element.tag == "complete" and Mentions(PlainText(line.text), name) then
+                unit(line, "mob", {name})
+                placed = true
+                break
+            end
+        end
+        if not placed then rest[#rest + 1] = name end
+    end
     local function home(tags)
         for _, line in ipairs(todo) do
-            if tags[line.element.tag] and not fromQuestie[line] then return line end
+            if free(line) and tags[line.element.tag] then return line end
         end
         for _, line in ipairs(todo) do
-            if tags[line.element.tag] then return line end
+            if free(line) and not line.quest then return line end
         end
         for _, line in ipairs(todo) do
-            if not line.quest then return line end
+            if free(line) then return line end
         end
-        return todo[1]
     end
-    if #friendly > 0 then
-        local line = home({accept = true, turnin = true})
-        for _, name in ipairs(friendly) do unit(line, "target", name) end
-    end
-    if #enemy > 0 then
-        local line = home({complete = true})
-        for _, name in ipairs(enemy) do unit(line, "mob", name) end
-    end
+    if #friendly > 0 then unit(home({accept = true, turnin = true}), "target", friendly) end
+    if #rest > 0 then unit(home({complete = true}), "mob", rest) end
+
+    -- The step's other items: a line still without a button, one that is not about a quest first.
+    for _, id in ipairs(loose) do item(home({}), id) end
 end
 
 --------------------------------------------------------------------------------------------------
@@ -184,6 +223,7 @@ end
 
 local holder
 local pool = {}
+local lastLook
 
 local function Button_OnEnter(button)
     local data = button.data
@@ -191,6 +231,11 @@ local function Button_OnEnter(button)
     GameTooltip:SetOwner(button, "ANCHOR_LEFT")
     if data.kind == "item" then
         GameTooltip:SetItemByID(data.item)
+    elseif #data.names > 1 then
+        GameTooltip:AddLine("Target the nearest", 1, 1, 1)
+        for _, name in ipairs(data.names) do
+            GameTooltip:AddLine((name == button.chosen and "> " or "") .. name, 0.8, 0.8, 0.8)
+        end
     else
         GameTooltip:AddLine("Target " .. data.name, 1, 1, 1)
         GameTooltip:AddLine(data.kind == "mob" and "Mob of this line" or "NPC of this line", 0.8, 0.8, 0.8)
@@ -254,7 +299,48 @@ local function Wanted()
     return list, root
 end
 
-local function Configure(button, want)
+-- How far away a unit is, roughly: LibRangeCheck when another addon brings it, else the interact distances.
+local function Distance(unit)
+    local lib = LibStub and LibStub("LibRangeCheck-3.0", true)
+    if lib then
+        local fine, low, high = pcall(lib.GetRange, lib, unit)
+        if fine and (high or low) then return high or low end
+    end
+    for _, check in ipairs({{3, 10}, {4, 28}}) do
+        local fine, inRange = pcall(CheckInteractDistance, unit, check[1])
+        if fine and inRange then return check[2] end
+    end
+    return 100
+end
+
+-- Of a button's names, the one of the nearest living unit with a nameplate; nil when none is in sight.
+local function Nearest(names)
+    if not (C_NamePlate and C_NamePlate.GetNamePlates) then return end
+    local wanted = {}
+    for _, name in ipairs(names) do wanted[name] = true end
+    local best, bestDistance
+    for _, plate in ipairs(C_NamePlate.GetNamePlates() or {}) do
+        local unit = plate.namePlateUnitToken or plate.UnitFrame and plate.UnitFrame.unit
+        local fine, name = pcall(UnitName, unit or "")
+        if fine and type(name) == "string" and not (issecretvalue and issecretvalue(name)) and wanted[name]
+            and not UnitIsDead(unit) then
+            local distance = Distance(unit)
+            if not bestDistance or distance < bestDistance then best, bestDistance = name, distance end
+        end
+    end
+    return best
+end
+
+-- The macro of a target button: the nearest of its names when one is in sight, else each name in turn (the last
+-- one found stays targeted).
+local function TargetMacro(data, chosen)
+    if chosen or #data.names == 1 then return "/targetexact " .. (chosen or data.name) end
+    local lines = {}
+    for index = #data.names, 1, -1 do lines[#lines + 1] = "/targetexact " .. data.names[index] end
+    return table.concat(lines, "\n")
+end
+
+local function Configure(button, want, chosen)
     local data = want.data
     button.data = data
     if data.kind == "item" then
@@ -264,8 +350,9 @@ local function Configure(button, want)
     else
         button:SetAttribute("type", "macro")
         button:SetAttribute("item", nil)
-        button:SetAttribute("macrotext", "/targetexact " .. data.name)
+        button:SetAttribute("macrotext", TargetMacro(data, chosen))
     end
+    button.chosen = chosen
     button.icon:SetTexture(data.icon)
     button:ClearAllPoints()
     button:SetPoint("TOPLEFT", holder, "BOTTOMLEFT", want.left, want.top)
@@ -306,9 +393,19 @@ local function Update()
         if math.abs(holder:GetScale() - scale) > 0.0001 then holder:SetScale(scale) end
         if root then holder:SetFrameLevel(root:GetFrameLevel() + 20) end
     end
+    -- Which of several mobs is nearest is looked at twice a second.
+    local now = GetTime and GetTime() or 0
+    local look = not lastLook or now - lastLook >= 0.5
+    if look then lastLook = now end
     for index, want in ipairs(wanted) do
         local button = pool[index] or NewButton()
-        if button.key ~= want.key then Configure(button, want) end
+        local names = want.data.names
+        local chosen
+        if names and #names > 1 then
+            chosen = button.key == want.key and button.chosen or nil
+            if look or button.key ~= want.key then chosen = Nearest(names) end
+        end
+        if button.key ~= want.key or chosen ~= button.chosen then Configure(button, want, chosen) end
         button:SetAlpha(1)
         button:Show()
         Cooldown(button)
@@ -317,7 +414,7 @@ local function Update()
         local button = pool[index]
         if button:IsShown() then
             button:Hide()
-            button.key, button.data = nil, nil
+            button.key, button.data, button.chosen = nil, nil, nil
         end
     end
 end

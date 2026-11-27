@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.7.1
+
+- One button per line. A kill line targets only its own mob; two kill lines in a step each get their own.
+- Several mobs that drop a line's item share one button: it targets the nearest living one in sight (by nameplate).
+
 ## v1.7.0
 
 This version adds a file: restart the game after updating, `/reload` is not enough.
